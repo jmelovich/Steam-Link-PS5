@@ -1,0 +1,16 @@
+# Build outputs and fetched dependencies
+/build/
+/dist/
+/.deps/
+*.o
+*.a
+*.elf
+eboot.bin
+
+# Host presentation assets that must stay out of git (see PLAN.md)
+/sce_sys/pic0.dds
+/sce_sys/pic1.dds
+/sce_sys/snd0.at9
+
+# Local overrides
+/.env
