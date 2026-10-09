@@ -26,10 +26,17 @@ SECTIONS {
         *(.plt .plt.*)
     } : text
 
+    /* The bracket symbols are what libunwind (pulled in by libc++abi) looks up. */
     .eh_frame_hdr : ALIGN(CONSTANT(MAXPAGESIZE)) {
+        PROVIDE_HIDDEN(__eh_frame_hdr_start = .);
         KEEP(*(.eh_frame_hdr))
+        PROVIDE_HIDDEN(__eh_frame_hdr_end = .);
     } : ro
-    .eh_frame : { KEEP(*(.eh_frame)) } : ro
+    .eh_frame : {
+        PROVIDE_HIDDEN(__eh_frame_start = .);
+        KEEP(*(.eh_frame))
+        PROVIDE_HIDDEN(__eh_frame_end = .);
+    } : ro
     .gcc_except_table : { *(.gcc_except_table .gcc_except_table.*) } : ro
     .rodata : { *(.rodata .rodata.*) } : ro
 

@@ -1,33 +1,22 @@
 /*
- * ps5-native-app-boilerplate - ProsperoLight component.
+ * ps5-native-app-boilerplate - ProsperoLight component, trimmed for steamlink-ps5.
  * Copyright (C) 2026 BlackBearReloaded
  * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Force-included (-include) when compiling third-party networking code: a PS5
+ * socket is a libSceNet handle, so the descriptor calls below must go through
+ * the adapter in ps5_sockets.c rather than libc.
  */
 
 #pragma once
 
 #include <fcntl.h>
-#include <pthread.h>
+#include <poll.h>
+#include <sys/select.h>
+/* The SDK's <arpa/inet.h> does not pull these in; ihslib's POSIX backends expect it to. */
+#include <netinet/in.h>
+#include <sys/socket.h>
 
-#include "ps5_thread_placement.h"
-
-/*
- * The generic FreeBSD path in moonlight-common-c renames every new thread.
- * Calling the PS5 pthread_rename_np export from a newly started thread hangs
- * before its entry point runs, so the name is never applied. The hook runs on
- * the new thread itself, so it places that thread by name instead.
- */
-static inline int ps5_pthread_setname_place(pthread_t thread, const char *name) {
-    (void)thread;
-    ps5_thread_placement_apply_name(name);
-    return 0;
-}
-#define pthread_setname_np ps5_pthread_setname_place
-
-/* Portable by default; optional CPUID + XCR0 checked nanors dispatch. */
-#include "ps5_fec_cpu.h"
-
-/* PS5 network handles must be closed/configured through libSceNet. */
 #ifndef PS5_SOCKET_ADAPTER_IMPLEMENTATION
 #define close ps5_socket_close
 #define fcntl ps5_socket_fcntl
@@ -37,4 +26,7 @@ static inline int ps5_pthread_setname_place(pthread_t thread, const char *name) 
 int ps5_socket_close(int socket);
 int ps5_socket_fcntl(int socket, int command, ...);
 int ps5_socket_ioctl(int socket, unsigned long request, ...);
+int ps5_socket_poll(struct pollfd *descriptors, nfds_t count, int timeout_ms);
+int ps5_socket_select(int descriptor_count, fd_set *read_set, fd_set *write_set,
+                      fd_set *error_set, struct timeval *timeout);
 #endif

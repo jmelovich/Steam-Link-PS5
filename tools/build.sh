@@ -257,7 +257,10 @@ if [[ -n ${pacbrew_root:-} ]]; then
         ninja_inputs+=("$input")
     done < <(find "$pacbrew_root" -type f \( -name '*.a' -o -name '*.so' \) -print0 | sort -z)
 fi
+# -L: libc++'s objects carry a dependent-library note for pthread; the SDK's
+# libpthread.a is empty (threads come from libkernel) and satisfies it.
 ninja_edge LINK "$build/llvm-pie.elf" "$sdk_root/bin/prospero-lld" -T "$native/ps5-pie.ld" --eh-frame-hdr \
+    -L "$sdk_root/target/lib" \
     "${wrap_options[@]}" --version-script "$native/app-symbols.map" \
     -e _start -o "$build/llvm-pie.elf" "${link_inputs[@]}" \
     --as-needed "$sdk_root"/target/lib/*.so

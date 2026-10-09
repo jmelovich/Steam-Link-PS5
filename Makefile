@@ -8,8 +8,11 @@ SHELL := /bin/bash
 -include .env
 
 APP_DEFINITIONS ?=
-APP_INCLUDE_PATHS ?=
-APP_STATIC_ARCHIVES ?=
+# The streaming stack from tools/build-deps.sh (archive order: users before providers).
+APP_INCLUDE_PATHS ?= third_party/ihslib/include platform/ps5 third_party/opus/include third_party/mbedtls/include
+APP_STATIC_ARCHIVES ?= build/deps/libihslib.a build/deps/libprotobuf-c.a build/deps/libopus.a \
+	build/deps/libmbedtls.a build/deps/libmbedx509.a build/deps/libmbedcrypto.a \
+	build/deps/libcxx.a build/deps/libcxxabi.a build/deps/libunwind.a
 APP_RUNTIME_MODULES ?=
 APP_WRAP_SYMBOLS ?=
 APP_SOURCE_DIR ?=
@@ -140,7 +143,12 @@ $(RUNTIME): $(RUNTIME_INPUTS)
 	@printf '%s\n' '==> [libc] Generating the missing or outdated runtime'
 	@bash tools/rebuild-libc.sh
 
-app: $(RUNTIME)
+# The streaming stack (ihslib, protobuf-c, mbedtls, opus, platform/ps5) is built once
+# into build/deps by tools/build-deps.sh and relinked into the app from there.
+stream-deps:
+	@bash tools/build-deps.sh
+
+app: $(RUNTIME) stream-deps
 	@printf '%s\n' '==> [app] Compiling, linking, signing, and assembling the app folder'
 	@bash tools/build.sh Folder
 
