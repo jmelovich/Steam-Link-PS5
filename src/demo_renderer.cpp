@@ -386,6 +386,30 @@ void Canvas::blit(const std::uint32_t *source, unsigned source_width, unsigned s
     }
 }
 
+void Canvas::blit_scaled(const std::uint32_t *source, unsigned source_width, unsigned source_height,
+                         unsigned dst_x, unsigned dst_y, unsigned dst_width, unsigned dst_height) noexcept
+{
+    if (source == nullptr || source_width == 0 || source_height == 0 || dst_width == 0 || dst_height == 0)
+        return;
+    if (dst_x >= frame_width || dst_y >= frame_height)
+        return;
+    const unsigned out_w = dst_width > frame_width - dst_x ? frame_width - dst_x : dst_width;
+    const unsigned out_h = dst_height > frame_height - dst_y ? frame_height - dst_y : dst_height;
+    // Precompute the source column for each destination column once; reuse per row.
+    static unsigned sx[frame_width];
+    for (unsigned column = 0; column < out_w; ++column)
+        sx[column] = column * source_width / dst_width;
+    auto *bytes = reinterpret_cast<std::uint8_t *>(pixels_);
+    for (unsigned row = 0; row < out_h; ++row)
+    {
+        const unsigned srow = row * source_height / dst_height;
+        const std::uint32_t *line = source + static_cast<std::size_t>(srow) * source_width;
+        const unsigned py = dst_y + row;
+        for (unsigned column = 0; column < out_w; ++column)
+            *reinterpret_cast<std::uint32_t *>(bytes + tiled_byte_offset(dst_x + column, py)) = line[sx[column]];
+    }
+}
+
 void read_asset_text(const char *path, std::span<char> destination,
                      std::string_view fallback) noexcept
 {

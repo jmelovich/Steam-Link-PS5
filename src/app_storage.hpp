@@ -40,7 +40,7 @@ struct Settings
     std::uint32_t audio_channels = 2;  // 2 or 6
     std::uint64_t last_host = 0;       // client id of the PC streamed from last
     bool auto_connect = true;          // connect to last_host without asking
-    std::uint32_t bitrate_kbps = 5000; // cap asked of the host: 5000, 10000, 15000, 20000, 30000
+    std::uint32_t bitrate_kbps = 3000; // cap asked of the host: 5000, 10000, 15000, 20000, 30000
     std::uint32_t quality = 1;         // 0 balanced, 1 fast, 2 beautiful
 };
 Settings &settings();

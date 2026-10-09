@@ -163,17 +163,18 @@ void launcher_input()
         const bool backward = slp::hid::pressed(now.left, before.left);
         if (forward || backward)
         {
-            static const std::uint32_t bitrates[] = {5000, 10000, 15000, 20000, 30000};
+            static const std::uint32_t bitrates[] = {2000, 3000, 5000, 10000, 15000, 20000, 30000};
+            constexpr int bitrate_count = 7;
             switch (status.settings_cursor)
             {
             case 0: settings.max_height = settings.max_height == 1080 ? 720 : 1080; break;
             case 1:
             {
                 int i = 0;
-                for (int k = 0; k < 5; ++k)
+                for (int k = 0; k < bitrate_count; ++k)
                     if (bitrates[k] == settings.bitrate_kbps)
                         i = k;
-                i = (i + (forward ? 1 : 4)) % 5;
+                i = (i + (forward ? 1 : bitrate_count - 1)) % bitrate_count;
                 settings.bitrate_kbps = bitrates[i];
                 break;
             }
@@ -271,7 +272,17 @@ void draw_stream(ps5::demo::Canvas &canvas) noexcept
     if (slp::video::latest(frame))
     {
         status.have_picture = true;
-        const unsigned y = frame.height < 1080 ? (1080 - frame.height) / 2 : 0;
+        // Scale the decoded frame to fill 1920x1080, preserving aspect (letterbox).
+        // The host streams at its own aspect (e.g. 1280x536), so a 1:1 copy would
+        // leave most of the screen black; scaling makes any resolution fill.
+        constexpr unsigned screen_w = 1920, screen_h = 1080;
+        unsigned dst_w = screen_w, dst_h = frame.height * screen_w / frame.width;
+        if (dst_h > screen_h)
+        {
+            dst_h = screen_h;
+            dst_w = frame.width * screen_h / frame.height;
+        }
+        const unsigned dst_x = (screen_w - dst_w) / 2, dst_y = (screen_h - dst_h) / 2;
         // Each VideoOut buffer remembers which picture it holds; only redraw when a
         // newer one exists (the tiled blit is the costliest thing we do per refresh).
         static std::uint64_t drawn[2] = {0, 0};
@@ -286,7 +297,7 @@ void draw_stream(ps5::demo::Canvas &canvas) noexcept
         }
         if (drawn[i] != frame.serial)
         {
-            canvas.blit(frame.rgba, frame.width, frame.height, 0, y);
+            canvas.blit_scaled(frame.rgba, frame.width, frame.height, dst_x, dst_y, dst_w, dst_h);
             drawn[i] = frame.serial;
         }
         slp::video::release(frame);

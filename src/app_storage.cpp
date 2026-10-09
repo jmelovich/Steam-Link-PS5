@@ -190,7 +190,7 @@ void settings_load()
             g_settings.quality = static_cast<std::uint32_t>(std::atoi(value)) % 3;
     }
     if (g_settings.bitrate_kbps < 2000 || g_settings.bitrate_kbps > 60000)
-        g_settings.bitrate_kbps = 5000;
+        g_settings.bitrate_kbps = 3000;
     log("settings: max_height=%u hevc=%d audio=%u last_host=%llu auto_connect=%d", g_settings.max_height,
         g_settings.hevc, g_settings.audio_channels, static_cast<unsigned long long>(g_settings.last_host),
         g_settings.auto_connect);

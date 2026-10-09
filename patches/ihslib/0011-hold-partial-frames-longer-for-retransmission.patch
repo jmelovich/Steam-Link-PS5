@@ -1,0 +1,40 @@
+From: steamlink-ps5
+Subject: data channel: hold partial frames ~1s so retransmits can land
+
+The window discarded any frame older than 200 ms and the video layer abandoned
+a half-assembled frame after 150 ms. Both are shorter than a round trip on a
+weak Wi-Fi link, so a packet asked for by the new retransmission request
+(0010) arrived after its frame had already been thrown away, and the client
+spent many seconds cycling keyframe requests before one happened to complete
+intact. Raise both to ~1 s: a retransmitted fragment now lands in time and the
+frame finishes. This trades a little latency for not freezing, which is the
+right call on a link that drops packets.
+
+diff -ru a/src/session/channels/ch_data.c b/src/session/channels/ch_data.c
+--- a/src/session/channels/ch_data.c	2026-10-08 21:28:11.454204946 -0700
++++ b/src/session/channels/ch_data.c	2026-10-08 21:28:11.466548920 -0700
+@@ -31,7 +31,7 @@
+ 
+ #include "ihs_buffer_ext.h"
+ 
+-#define DISCARD_DIFF IHS_SESSION_PACKET_TIMESTAMP_FROM_MILLIS(200)
++#define DISCARD_DIFF IHS_SESSION_PACKET_TIMESTAMP_FROM_MILLIS(1000)
+ 
+ static void DataThreadWorker(IHS_SessionChannelData *channel);
+ 
+diff -ru a/src/session/channels/video/ch_data_video.c b/src/session/channels/video/ch_data_video.c
+--- a/src/session/channels/video/ch_data_video.c	2026-10-08 21:28:11.449064061 -0700
++++ b/src/session/channels/video/ch_data_video.c	2026-10-08 21:28:11.466697553 -0700
+@@ -371,8 +371,10 @@
+     if (head == NULL || head == tail) {
+         return;
+     }
+-    // 150 ms in 1/65536-second units. Span between oldest and newest pending fragment.
+-    const uint32_t overflowSpan = (uint32_t) (150 * 65536 / 1000);
++    // 1000 ms in 1/65536-second units. Span between oldest and newest pending
++    // fragment: long enough that a retransmitted fragment can still land on a
++    // slow Wi-Fi link before the half-assembled frame is abandoned.
++    const uint32_t overflowSpan = (uint32_t) (1000 * 65536 / 1000);
+     uint32_t span = tail->timestamp - head->timestamp;
+     if (span <= overflowSpan) {
+         return;

@@ -1,0 +1,134 @@
+From: steamlink-ps5
+Subject: data channel: ask the host to resend lost packets, not just a keyframe
+
+CStreamDataLostMsg carries a list of lost packet ids, but mariotaku's ihslib
+always sent it empty, so the only loss recovery was to beg for a full keyframe.
+On a weak link the keyframe is the largest, most fragile frame, so it keeps
+losing a fragment and the client sits in "wait for keyframe" forever - the
+picture freezes while audio keeps playing. Enumerate the packets the window is
+missing and send them in the DataLost message so the host retransmits exactly
+those; frames then finish assembling and the stream keeps moving. Rate limited
+to ~every 100 ms, skipping the newest ids that are still in flight. The keyframe
+request stays as the fallback for large gaps.
+
+diff -ru a/src/session/channels/ch_data.c b/src/session/channels/ch_data.c
+--- a/src/session/channels/ch_data.c	2026-10-08 21:27:56.927141444 -0700
++++ b/src/session/channels/ch_data.c	2026-10-08 21:27:56.952282428 -0700
+@@ -107,6 +107,33 @@
+     IHS_SessionPacketClear(&packet, true);
+ }
+ 
++/* Ask the host to resend specific lost packets so a frame can finish assembling,
++ * instead of only begging for a full keyframe. CStreamDataLostMsg carries the id
++ * list; mariotaku's ihslib always sent it empty. */
++void IHS_SessionChannelDataLostPackets(IHS_SessionChannel *channel, const uint16_t *ids, size_t count) {
++    if (count == 0) {
++        IHS_SessionChannelDataLost(channel);
++        return;
++    }
++    uint32_t stackIds[128];
++    uint32_t *wideIds = stackIds;
++    if (count > 128) {
++        count = 128;
++    }
++    for (size_t i = 0; i < count; i++) {
++        wideIds[i] = ids[i];
++    }
++    CStreamDataLostMsg message = CSTREAM_DATA_LOST_MSG__INIT;
++    message.n_packets = count;
++    message.packets = wideIds;
++    IHS_SessionPacket packet;
++    IHS_SessionChannelInitializePacket(channel, &packet, IHS_SessionPacketTypeUnreliable, true, IHS_PACKET_ID_NEXT);
++    IHS_BufferAppendUInt8(&packet.body, k_EStreamDataLost);
++    IHS_BufferAppendMessage(&packet.body, (const ProtobufCMessage *) &message);
++    IHS_SessionChannelQueuePacket(channel, &packet, false);
++    IHS_SessionPacketClear(&packet, true);
++}
++
+ void IHS_SessionChannelDataStopped(IHS_SessionChannel *channel) {
+     DataThreadInterrupt((IHS_SessionChannelData *) channel);
+ }
+@@ -140,6 +167,18 @@
+         }
+         bool hasFrame;
+         while (!(hasFrame = IHS_SessionPacketsWindowPoll(channel->window, &frame))) {
++            /* A frame cannot be assembled: ask the host to resend the packets the
++             * window is missing (skip the newest 4, still likely in flight), rate
++             * limited to ~every 100 ms so ACKs are not crowded out on a lossy uplink. */
++            uint16_t missing[64];
++            uint16_t nMissing = IHS_SessionPacketsWindowMissing(channel->window, missing, 64, 4);
++            if (nMissing > 0) {
++                uint64_t now = IHS_TimerNow();
++                if (now - channel->lastRetransmitRequestMs >= 100) {
++                    channel->lastRetransmitRequestMs = now;
++                    IHS_SessionChannelDataLostPackets((IHS_SessionChannel *) channel, missing, nMissing);
++                }
++            }
+             IHS_CondWait(channel->windowCond, channel->windowLock);
+             if (channel->interrupted) {
+                 break;
+diff -ru a/src/session/channels/ch_data.h b/src/session/channels/ch_data.h
+--- a/src/session/channels/ch_data.h	2026-10-08 17:01:34.254697003 -0700
++++ b/src/session/channels/ch_data.h	2026-10-08 21:27:56.956447489 -0700
+@@ -49,6 +49,7 @@
+     IHS_Mutex *lock;
+ 
+     uint32_t lastPacketTimestamp;
++    uint64_t lastRetransmitRequestMs;
+ } IHS_SessionChannelData;
+ 
+ typedef struct IHS_SessionChannelDataClass {
+@@ -75,6 +76,7 @@
+ void IHS_SessionChannelDataReceived(IHS_SessionChannel *channel, IHS_SessionPacket *packet);
+ 
+ void IHS_SessionChannelDataLost(IHS_SessionChannel *channel);
++void IHS_SessionChannelDataLostPackets(IHS_SessionChannel *channel, const uint16_t *ids, size_t count);
+ 
+ void IHS_SessionChannelDataStopped(IHS_SessionChannel *channel);
+ 
+diff -ru a/src/session/window.c b/src/session/window.c
+--- a/src/session/window.c	2026-10-08 21:27:56.935081668 -0700
++++ b/src/session/window.c	2026-10-08 21:27:56.952182688 -0700
+@@ -88,6 +88,23 @@
+     window->tail.pos = -1;
+ }
+ 
++uint16_t IHS_SessionPacketsWindowMissing(const IHS_SessionPacketsWindow *window, uint16_t *out, uint16_t max,
++                                         uint16_t skipRecent) {
++    uint16_t size = IHS_SessionPacketsWindowSize(window);
++    if (size <= skipRecent) {
++        return 0;
++    }
++    uint16_t limit = size - skipRecent;
++    uint16_t count = 0;
++    for (uint16_t k = 0; k < limit && count < max; k++) {
++        int pos = (window->head.pos + k) % window->capacity;
++        if (!FrameItemIsUsed(&window->data[pos])) {
++            out[count++] = (uint16_t) (window->tail.id - (size - 1) + k);
++        }
++    }
++    return count;
++}
++
+ bool IHS_SessionPacketsWindowAdd(IHS_SessionPacketsWindow *window, IHS_SessionPacket *packet) {
+     /* Calculate distance of 2 items */
+     int tailOffset = window->tail.pos < 0 ? 1 : (int16_t) (packet->header.packetId - window->tail.id);
+diff -ru a/src/session/window.h b/src/session/window.h
+--- a/src/session/window.h	2026-10-08 21:27:56.928335200 -0700
++++ b/src/session/window.h	2026-10-08 21:27:56.952242882 -0700
+@@ -46,6 +46,15 @@
+  */
+ void IHS_SessionPacketsWindowReset(IHS_SessionPacketsWindow *window);
+ 
++/**
++ * List the packet ids missing between the head and the tail (gaps a loss left),
++ * skipping the newest `skipRecent` ids that are probably still in flight. Writes
++ * up to `max` ids into `out` and returns how many. Used to ask the host to
++ * retransmit exactly those packets so a frame can finish assembling.
++ */
++uint16_t IHS_SessionPacketsWindowMissing(const IHS_SessionPacketsWindow *window, uint16_t *out, uint16_t max,
++                                         uint16_t skipRecent);
++
+ bool IHS_SessionPacketsWindowAdd(IHS_SessionPacketsWindow *window, IHS_SessionPacket *packet);
+ 
+ bool IHS_SessionPacketsWindowPoll(IHS_SessionPacketsWindow *window, IHS_SessionFrame *frame);

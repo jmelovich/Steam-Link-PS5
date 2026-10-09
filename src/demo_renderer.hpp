@@ -50,6 +50,10 @@ class Canvas final
     // Copy a block of RGBA pixels into the frame at (x, y). For decoded video.
     void blit(const std::uint32_t *source, unsigned source_width, unsigned source_height,
               unsigned x, unsigned y) noexcept;
+    // Nearest-neighbour scale a block of RGBA pixels into the destination rectangle.
+    // Used to fill the screen from a stream of any resolution.
+    void blit_scaled(const std::uint32_t *source, unsigned source_width, unsigned source_height,
+                     unsigned dst_x, unsigned dst_y, unsigned dst_width, unsigned dst_height) noexcept;
     // Which of the (two) frame buffers this canvas draws into; stable across frames.
     const void *identity() const noexcept
     {
