@@ -125,6 +125,14 @@ struct Device
     alignas(Report) std::uint8_t prev[kMaxReport];
     std::size_t report_len; // bytes the host wants per report (>= sizeof(Report))
     bool sensors;
+    // Options + touchpad-click chord: a tap sends Steam's Guide (Steam) button; a 1.5 s
+    // hold leaves the stream (main.cpp stream_chord reads the raw g_primary_buttons).
+    bool chord_down;                  // both held right now
+    bool chord_latched;               // chord released; hide both until fully let go
+    std::uint64_t chord_start_us;
+    std::uint64_t guide_until_us;     // emit Guide while now < this
+    std::uint64_t options_pending_us; // lone Options seen, held back to see if a chord follows
+    bool options_forwarding;          // lone Options confirmed as a real press
 };
 inline Report &cur_report(Device *d) { return *reinterpret_cast<Report *>(d->cur); }
 inline const Report &prev_report(Device *d) { return *reinterpret_cast<const Report *>(d->prev); }
@@ -231,7 +239,7 @@ std::int16_t remap(float value, float low, float high)
 }
 
 // Fill a wire report from a pad sample. Returns true when it differs from `before`.
-bool fill_report(Report &report, const Report &before, const PadSample &sample, bool sensors)
+bool fill_report(Report &report, const Report &before, const PadSample &sample, bool sensors, bool guide)
 {
     report.axes[AX_LX] = stick(sample.left_x);
     report.axes[AX_LY] = stick(sample.left_y);
@@ -259,6 +267,7 @@ bool fill_report(Report &report, const Report &before, const PadSample &sample, 
     set(b & PAD_DOWN, BTN_DDOWN);
     set(b & PAD_LEFT, BTN_DLEFT);
     set(b & PAD_RIGHT, BTN_DRIGHT);
+    set(guide, BTN_GUIDE); // the PS button belongs to the console; the chord stands in for Steam's
     report.buttons = buttons;
     if (sensors)
     {
@@ -293,6 +302,12 @@ void device_opened(IHS_HIDDevice *device)
     std::memset(self->cur, 0, kMaxReport);
     std::memset(self->prev, 0, kMaxReport);
     self->report_len = sizeof(Report);
+    self->chord_down = false;
+    self->chord_latched = false;
+    self->chord_start_us = 0;
+    self->guide_until_us = 0;
+    self->options_pending_us = 0;
+    self->options_forwarding = false;
 }
 
 void device_close(IHS_HIDDevice *device)
@@ -511,8 +526,70 @@ int device_poll(IHS_HIDDevice *device)
     // While the system intercepts the pad (PS menu up), hold the last state.
     if (sample.buttons & PAD_INTERCEPTED)
         return 0;
-    if (!fill_report(cur_report(self), prev_report(self), sample, self->sensors))
-        return 0;
+    // ---- Options + touchpad-click chord ---------------------------------------------
+    // Tap: send Steam's Guide button (opens the Steam / Big Picture menu). Hold 1.5 s:
+    // leave the stream (stream_chord in main.cpp reads g_primary_buttons, the raw bits
+    // stored above, so hiding the buttons here does not affect it). While chording, and
+    // until both are let go, Options and the touchpad click are hidden from Steam. A lone
+    // Options press is held back ~60 ms so a chord never leaks a stray Start; a quick solo
+    // Options tap shorter than that is replayed so it is not lost.
+    {
+        const std::uint64_t t = now_us();
+        const bool raw_opt = (sample.buttons & PAD_OPTIONS) != 0;
+        const bool raw_touch = (sample.buttons & PAD_TOUCH) != 0;
+        constexpr std::uint64_t k_hold_back_us = 60000, k_tap_max_us = 1000000, k_guide_pulse_us = 120000;
+        if (self->chord_down)
+        {
+            if (!(raw_opt && raw_touch))
+            {
+                self->chord_down = false;
+                self->chord_latched = true;
+                if (t - self->chord_start_us < k_tap_max_us)
+                    self->guide_until_us = t + k_guide_pulse_us;
+            }
+            sample.buttons &= ~(PAD_OPTIONS | PAD_TOUCH);
+        }
+        else if (self->chord_latched)
+        {
+            if (!raw_opt && !raw_touch)
+                self->chord_latched = false;
+            sample.buttons &= ~(PAD_OPTIONS | PAD_TOUCH);
+            self->options_pending_us = 0;
+            self->options_forwarding = false;
+        }
+        else if (raw_opt && raw_touch)
+        {
+            self->chord_down = true;
+            self->chord_start_us = t;
+            self->options_pending_us = 0;
+            self->options_forwarding = false;
+            sample.buttons &= ~(PAD_OPTIONS | PAD_TOUCH);
+        }
+        else if (raw_opt)
+        {
+            if (!self->options_forwarding)
+            {
+                if (self->options_pending_us == 0)
+                    self->options_pending_us = t;
+                if (t - self->options_pending_us >= k_hold_back_us)
+                    self->options_forwarding = true; // a real Options press: forward from now on
+                else
+                    sample.buttons &= ~PAD_OPTIONS; // still deciding whether a chord follows
+            }
+        }
+        else
+        {
+            // Options released. A solo tap shorter than the hold-back never reached Steam:
+            // replay it for this one report (the next report releases it) so it is not lost.
+            if (self->options_pending_us != 0 && !self->options_forwarding)
+                sample.buttons |= PAD_OPTIONS;
+            self->options_pending_us = 0;
+            self->options_forwarding = false;
+        }
+        const bool guide = t < self->guide_until_us;
+        if (!fill_report(cur_report(self), prev_report(self), sample, self->sensors, guide))
+            return 0;
+    }
     // Delta over the full host-requested length; padding bytes never change.
     IHS_HIDDeviceReportAddDelta(device, self->prev, self->cur, self->report_len);
     std::memcpy(self->prev, self->cur, kMaxReport);
