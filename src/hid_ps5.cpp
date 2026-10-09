@@ -112,14 +112,22 @@ struct Slot
     std::uint32_t raw_buttons = 0;
 };
 
+// The host picks the input-report length it will parse (DeviceStartInputReports.length);
+// it can be larger than our 48-byte gamepad report. We keep the report in a buffer sized
+// to whatever the host asked for: our Report at offset 0, the rest zero-padded, so the
+// report we send is exactly the length the host expects and it stops discarding them.
+constexpr std::size_t kMaxReport = 128;
 struct Device
 {
     IHS_HIDDevice base;
     int slot;
-    Report current;
-    Report previous;
+    alignas(Report) std::uint8_t cur[kMaxReport];
+    alignas(Report) std::uint8_t prev[kMaxReport];
+    std::size_t report_len; // bytes the host wants per report (>= sizeof(Report))
     bool sensors;
 };
+inline Report &cur_report(Device *d) { return *reinterpret_cast<Report *>(d->cur); }
+inline const Report &prev_report(Device *d) { return *reinterpret_cast<const Report *>(d->prev); }
 
 struct Provider
 {
@@ -282,8 +290,9 @@ void device_free(IHS_HIDDevice *device)
 void device_opened(IHS_HIDDevice *device)
 {
     auto *self = reinterpret_cast<Device *>(device);
-    std::memset(&self->current, 0, sizeof(Report));
-    std::memset(&self->previous, 0, sizeof(Report));
+    std::memset(self->cur, 0, kMaxReport);
+    std::memset(self->prev, 0, kMaxReport);
+    self->report_len = sizeof(Report);
 }
 
 void device_close(IHS_HIDDevice *device)
@@ -342,7 +351,7 @@ int device_write(IHS_HIDDevice *device, const std::uint8_t *data, std::size_t le
     case 0x09: // requested report version
         if (length < 2)
             return -1;
-        self->current.version = data[1];
+        cur_report(self).version = data[1];
         return 0;
     case 0x0a: // PS5 rumble mode
     case 0x0b: // player index
@@ -406,9 +415,14 @@ int device_get_feature_report(IHS_HIDDevice *device, const std::uint8_t *report_
         static_assert(sizeof(Caps) == 20);
         caps.valid = true;
         caps.xinput = false;
-        caps.controller_type = 45; // k_ControllerTypePS5Controller
+        caps.controller_type = 45; // k_ControllerTypePS5Controller: PlayStation glyphs on the host
         caps.player_index = self->slot;
-        caps.hid = true;
+        // Not a HIDAPI-backed device. ihslib's SDL provider only reports hid=true when
+        // SDL opened the pad through hidapi; claiming it made the host treat us as a raw
+        // native DualSense and request 73-byte reports it then could not parse from our
+        // 48-byte canonical gamepad report. With hid=false the host stays on the 48-byte
+        // path while keeping the DualSense identity (VID/PID + controller type).
+        caps.hid = false;
         IHS_BufferWriteMem(dest, 0, report_number, 1);
         IHS_BufferWriteMem(dest, 1, reinterpret_cast<const std::uint8_t *>(&caps), sizeof caps);
         return 0;
@@ -439,16 +453,22 @@ int device_serial_string(IHS_HIDDevice *device, IHS_Buffer *out)
 int device_start_input_reports(IHS_HIDDevice *device, std::size_t length)
 {
     auto *self = reinterpret_cast<Device *>(device);
-    slp::log("hid: host wants input reports of %zu bytes from pad %d", length, self->slot);
-    // The library clamps the report to the host's requested length, so always offer it.
-    IHS_HIDDeviceReportAddFull(device, reinterpret_cast<const std::uint8_t *>(&self->current), sizeof(Report));
-    self->previous = self->current;
+    // Honour the host's report length: send exactly that many bytes (our 48-byte report
+    // zero-padded). Sending 48 when the host asked for 73 made Steam discard every report.
+    self->report_len = length < sizeof(Report) ? sizeof(Report) : (length > kMaxReport ? kMaxReport : length);
+    slp::log("hid: host wants input reports of %zu bytes from pad %d; sending %zu", length, self->slot,
+             self->report_len);
+    IHS_HIDDeviceReportAddFull(device, self->cur, self->report_len);
+    std::memcpy(self->prev, self->cur, kMaxReport);
     return 0;
 }
 
 int device_request_full_report(IHS_HIDDevice *device)
 {
-    return device_start_input_reports(device, sizeof(Report));
+    auto *self = reinterpret_cast<Device *>(device);
+    IHS_HIDDeviceReportAddFull(device, self->cur, self->report_len);
+    std::memcpy(self->prev, self->cur, kMaxReport);
+    return 0;
 }
 
 int device_request_disconnect(IHS_HIDDevice *, int, const std::uint8_t *, std::size_t)
@@ -481,7 +501,8 @@ int device_poll(IHS_HIDDevice *device)
             }
         }
     }
-    if (handle < 0 || scePadReadState(handle, &sample) < 0)
+    const int read_rc = handle < 0 ? -1 : scePadReadState(handle, &sample);
+    if (read_rc < 0)
         return -1;
     if (!sample.connected)
         return 0;
@@ -490,11 +511,11 @@ int device_poll(IHS_HIDDevice *device)
     // While the system intercepts the pad (PS menu up), hold the last state.
     if (sample.buttons & PAD_INTERCEPTED)
         return 0;
-    if (!fill_report(self->current, self->previous, sample, self->sensors))
+    if (!fill_report(cur_report(self), prev_report(self), sample, self->sensors))
         return 0;
-    IHS_HIDDeviceReportAddDelta(device, reinterpret_cast<const std::uint8_t *>(&self->previous),
-                                reinterpret_cast<const std::uint8_t *>(&self->current), sizeof(Report));
-    self->previous = self->current;
+    // Delta over the full host-requested length; padding bytes never change.
+    IHS_HIDDeviceReportAddDelta(device, self->prev, self->cur, self->report_len);
+    std::memcpy(self->prev, self->cur, kMaxReport);
     return 1;
 }
 
@@ -575,10 +596,14 @@ void provider_device_info(IHS_HIDProvider *, IHS_Enumeration *enumeration, IHS_H
     info->path = slot.path;
     info->product_string = "DualSense Wireless Controller";
     info->serial_number = "";
-    // Advertise no VID/PID so the host treats the pad as a generic gamepad and
-    // requests the 48-byte SDL-canonical report we produce. With the real
-    // DualSense VID/PID the host modelled a native 73-byte report our 48-byte
-    // reports could not fill, and input was never applied.
+    // MEASURED on this host: advertising the DualSense VID/PID (even with
+    // is_generic_gamepad=true and caps hid=false) makes Steam switch to its native
+    // DualSense driver and request 73-byte raw reports, which our 48-byte canonical
+    // report cannot satisfy, so input is received, ACKed, and then ignored. With no
+    // VID/PID the host requests the 48-byte generic format we produce and input is
+    // applied. Steam Remote Play virtualizes every remote pad as an Xbox 360 pad via
+    // Steam Input anyway (no native DualSense passthrough), so working input on the
+    // generic path is the right call; the pad shows as a generic gamepad.
     info->vendor_id = 0;
     info->product_id = 0;
     info->product_version = 0;
