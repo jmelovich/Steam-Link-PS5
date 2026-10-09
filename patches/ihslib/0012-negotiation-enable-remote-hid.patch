@@ -1,0 +1,23 @@
+From: steamlink-ps5
+Subject: negotiation: advertise remote HID so the host injects controller input
+
+The client config set enable_remote_hid = 0, telling the host the client does
+not do remote HID. The host still opened the pad to read its feature reports
+(so "hid: host opened pad 0" appeared), but it never injected the gamepad's
+input into the game, so the controller did nothing on the PC. We do provide a
+HID gamepad via the ScePad provider, so advertise it (= 1).
+
+diff -ru a/src/session/channels/ch_control_negotiation.c b/src/session/channels/ch_control_negotiation.c
+--- a/src/session/channels/ch_control_negotiation.c	2026-10-09 11:01:21.565401560 -0700
++++ b/src/session/channels/ch_control_negotiation.c	2026-10-09 11:01:21.577481587 -0700
+@@ -133,7 +133,9 @@
+     config.n_available_video_modes = 1;
+     config.available_video_modes = availableVideoModes;
+ 
+-    PROTOBUF_C_SET_VALUE(config, enable_remote_hid, 0);
++    /* We provide a HID gamepad (ScePad); tell the host we speak remote HID so it
++     * actually injects our controller input instead of only opening the device. */
++    PROTOBUF_C_SET_VALUE(config, enable_remote_hid, 1);
+ 
+     CStreamingClientConfig clientConfig = CSTREAMING_CLIENT_CONFIG__INIT;
+ 

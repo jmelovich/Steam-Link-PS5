@@ -43,5 +43,15 @@ commit the submodule change here together with a note below.
 - `0009-session-config-max-resolution.patch`: `IHS_SessionConfig` gains `maxResolutionX/Y`
   so the app can ask the host to downscale (the negotiation hard-coded "unlimited"), which
   shrinks keyframes on a weak link.
+- `0010-video-request-retransmission-of-lost-packets.patch`: on a gap, ask the host to resend
+  the specific missing packets (`CStreamDataLostMsg.packets`, which upstream left empty) so a
+  frame can finish assembling instead of only begging for a keyframe. Rate-limited to 100 ms.
+- `0011-hold-partial-frames-longer-for-retransmission.patch`: hold partial frames ~1 s (was
+  150-200 ms) so a retransmitted fragment can land on a slow link before the frame is dropped.
+- `0012-negotiation-enable-remote-hid.patch`: advertise `enable_remote_hid = 1` so the host
+  injects the controller's input (it was 0, so the host opened the pad but ignored its input).
+- `0013-send-acks-redundantly-on-lossy-uplink.patch`: send each ACK three times so reliable
+  control handshakes (start input reports, keyframe/config delivery) survive a lossy uplink
+  where single ACKs are lost and the host otherwise gives up.
 
 All are candidates for upstream.
