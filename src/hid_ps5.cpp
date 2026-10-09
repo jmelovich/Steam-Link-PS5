@@ -348,9 +348,16 @@ int device_write(IHS_HIDDevice *device, const std::uint8_t *data, std::size_t le
     }
 }
 
-int device_read(IHS_HIDDevice *, IHS_Buffer *, std::size_t, std::uint32_t)
+int device_read(IHS_HIDDevice *, IHS_Buffer *dest, std::size_t length, std::uint32_t)
 {
-    return -1;
+    // Steam polls the device with hid_read for liveness; real input arrives via the
+    // pushed input reports (device_poll -> AddDelta). Returning -1 makes Steam log
+    // "Controller device closed after hid_read failure" and drop the pad, so the
+    // controller does nothing. Return a zeroed read of the requested size, as the
+    // reference SDL provider does.
+    std::uint8_t *pointer = IHS_BufferPointerForAppend(dest, length);
+    std::memset(pointer, 0, length);
+    return static_cast<int>(length);
 }
 
 int device_send_feature_report(IHS_HIDDevice *, const std::uint8_t *, std::size_t)
