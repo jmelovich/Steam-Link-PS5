@@ -11,7 +11,7 @@ APP_DEFINITIONS ?=
 # The streaming stack from tools/build-deps.sh (archive order: users before providers).
 # third_party/ihslib/src and protobuf-c: the ScePad HID provider implements ihslib's
 # device class, whose helpers live in private headers.
-APP_INCLUDE_PATHS ?= third_party/ihslib/include third_party/ihslib/src third_party/protobuf-c platform/ps5 \
+APP_INCLUDE_PATHS ?= build/deps/ihslib-src/include build/deps/ihslib-src/src third_party/protobuf-c platform/ps5 \
 	third_party/opus/include third_party/mbedtls/include
 APP_STATIC_ARCHIVES ?= build/deps/libihslib.a build/deps/libprotobuf-c.a build/deps/libopus.a \
 	build/deps/libmbedtls.a build/deps/libmbedx509.a build/deps/libmbedcrypto.a \

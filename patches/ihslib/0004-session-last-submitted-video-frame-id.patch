@@ -1,0 +1,62 @@
+From: steamlink-ps5
+Subject: session: expose the id of the video frame being submitted
+
+The submit callback carries no frame id, so an application cannot call
+IHS_SessionReportVideoFrameStage/Complete for it, and the host never gets the
+1 Hz frame stats that drive its adaptive bitrate. Record the id right before
+the callback and add IHS_SessionLastSubmittedVideoFrameId().
+
+diff -ru a/include/ihslib/session.h b/include/ihslib/session.h
+--- a/include/ihslib/session.h	2026-10-08 19:39:55.770948415 -0700
++++ b/include/ihslib/session.h	2026-10-08 19:39:55.805278036 -0700
+@@ -202,6 +202,12 @@
+  */
+ void IHS_SessionStatsSetFullReporting(IHS_Session *session, bool enabled);
+ 
++/**
++ * The id of the video frame currently (or most recently) passed to the submit
++ * callback: what to report stages and completion for. Valid inside submit.
++ */
++uint16_t IHS_SessionLastSubmittedVideoFrameId(const IHS_Session *session);
++
+ void IHS_SessionSetLogFunction(IHS_Session *session, IHS_LogFunction *logFunction);
+ 
+ const IHS_SessionInfo *IHS_SessionGetInfo(const IHS_Session *session);
+\ No newline at end of file
+diff -ru a/src/session/callbacks.c b/src/session/callbacks.c
+--- a/src/session/callbacks.c	2026-10-08 17:01:34.254639426 -0700
++++ b/src/session/callbacks.c	2026-10-08 19:39:55.805213692 -0700
+@@ -100,6 +100,10 @@
+     IHS_FrameStatsRecordComplete(session->frameStats, frameId, result);
+ }
+ 
++uint16_t IHS_SessionLastSubmittedVideoFrameId(const IHS_Session *session) {
++    return session->lastSubmittedVideoFrameId;
++}
++
+ void IHS_SessionStatsSetFullReporting(IHS_Session *session, bool enabled) {
+     if (session->frameStats == NULL) {
+         return;
+diff -ru a/src/session/channels/video/ch_data_video.c b/src/session/channels/video/ch_data_video.c
+--- a/src/session/channels/video/ch_data_video.c	2026-10-08 17:01:34.255289291 -0700
++++ b/src/session/channels/video/ch_data_video.c	2026-10-08 19:39:55.805151293 -0700
+@@ -439,6 +439,7 @@
+         return IHS_StreamVideoSubmitOK;
+     }
+     void *context = session->callbackContexts.video;
++    session->lastSubmittedVideoFrameId = ((IHS_SessionChannelVideo *) channel)->states.lastFrameId;
+     IHS_StreamVideoSubmitResult result = callbacks->submit(session, data, flags, context);
+     if (result == IHS_StreamVideoSubmitReportLost) {
+         // The immediate request of the pair, as FinalDecode sends one at 0x203844 before the reset
+diff -ru a/src/session/session_pri.h b/src/session/session_pri.h
+--- a/src/session/session_pri.h	2026-10-08 17:01:34.255289291 -0700
++++ b/src/session/session_pri.h	2026-10-08 19:39:55.804935763 -0700
+@@ -90,6 +90,8 @@
+     IHS_SessionRetransmission retransmission;
+     IHS_HIDManager *hidManager;
+     struct IHS_FrameStatsAggregator *frameStats;
++    /* The id of the video frame being handed to the submit callback (for stats). */
++    uint16_t lastSubmittedVideoFrameId;
+     struct {
+         const IHS_StreamSessionCallbacks *session;
+         const IHS_StreamAudioCallbacks *audio;

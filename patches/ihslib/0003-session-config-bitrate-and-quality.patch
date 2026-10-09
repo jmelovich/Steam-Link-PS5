@@ -1,0 +1,62 @@
+From: steamlink-ps5
+Subject: session: let the application cap the bitrate and pick the quality preset
+
+The negotiation hard-codes Balanced at 30000 kbit/s with a 90000 burst, which
+floods a weak Wi-Fi link: the host drops frames in bursts, the client loses
+whole frames, and the stream degrades into keyframe requests. Add
+maxBitrateKbps and quality to IHS_SessionConfig (both 0 = previous behaviour)
+so the configuring callback can ask for less.
+
+diff -ru a/include/ihslib/session.h b/include/ihslib/session.h
+--- a/include/ihslib/session.h	2026-10-08 17:01:34.251199092 -0700
++++ b/include/ihslib/session.h	2026-10-08 19:38:33.597299844 -0700
+@@ -43,6 +43,15 @@
+ typedef struct IHS_SessionConfig {
+     bool enableAudio;
+     bool enableHevc;
++    /**
++     * Cap on the bitrate the host may use, in kbit/s; 0 keeps the 30000 default.
++     * Sets maximum_bitrate_kbps and the decode/burst capabilities together.
++     */
++    int32_t maxBitrateKbps;
++    /**
++     * Quality preset asked of the host: 0 (default) = Balanced, 1 = Fast, 2 = Beautiful.
++     */
++    int32_t quality;
+ } IHS_SessionConfig;
+ 
+ typedef struct IHS_StreamSessionCallbacks {
+diff -ru a/src/session/channels/ch_control_negotiation.c b/src/session/channels/ch_control_negotiation.c
+--- a/src/session/channels/ch_control_negotiation.c	2026-10-08 17:01:34.254697003 -0700
++++ b/src/session/channels/ch_control_negotiation.c	2026-10-08 19:38:33.597426966 -0700
+@@ -156,8 +156,14 @@
+     PROTOBUF_C_SET_VALUE(clientConfig, enable_video_streaming, true);
+     PROTOBUF_C_SET_VALUE(clientConfig, maximum_framerate_numerator, 5994);
+     PROTOBUF_C_SET_VALUE(clientConfig, maximum_framerate_denominator, 100);
+-    PROTOBUF_C_SET_VALUE(clientConfig, quality, k_EStreamQualityBalanced);
+-    PROTOBUF_C_SET_VALUE(clientConfig, maximum_bitrate_kbps, 30000);
++    {
++        int32_t maxBitrate = ihsConf.maxBitrateKbps > 0 ? ihsConf.maxBitrateKbps : 30000;
++        EStreamQualityPreference quality = ihsConf.quality == 1 ? k_EStreamQualityFast
++                                           : ihsConf.quality == 2 ? k_EStreamQualityBeautiful
++                                                                  : k_EStreamQualityBalanced;
++        PROTOBUF_C_SET_VALUE(clientConfig, quality, quality);
++        PROTOBUF_C_SET_VALUE(clientConfig, maximum_bitrate_kbps, maxBitrate);
++    }
+     if (ihsConf.enableHevc) {
+         PROTOBUF_C_SET_VALUE(clientConfig, enable_video_hevc, true);
+     }
+@@ -174,8 +180,11 @@
+                              "\t\"VideoDisplayX\"\t\"1920\"\n\t\"VideoDisplayY\"\t\"1080\"\n"
+                              "\t\"VideoDisplayNameID\"\t\"JN-MD133BFHDR\"\n}\n";
+     PROTOBUF_C_SET_VALUE(clientCaps, system_can_suspend, true);
+-    PROTOBUF_C_SET_VALUE(clientCaps, maximum_decode_bitrate_kbps, 30000);
+-    PROTOBUF_C_SET_VALUE(clientCaps, maximum_burst_bitrate_kbps, 90000);
++    {
++        int32_t maxBitrate = ihsConf.maxBitrateKbps > 0 ? ihsConf.maxBitrateKbps : 30000;
++        PROTOBUF_C_SET_VALUE(clientCaps, maximum_decode_bitrate_kbps, maxBitrate);
++        PROTOBUF_C_SET_VALUE(clientCaps, maximum_burst_bitrate_kbps, maxBitrate * 3);
++    }
+     if (ihsConf.enableHevc) {
+         PROTOBUF_C_SET_VALUE(clientCaps, supports_video_hevc, true);
+     }

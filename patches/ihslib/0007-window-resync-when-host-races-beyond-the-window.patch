@@ -1,0 +1,38 @@
+From: steamlink-ps5
+Subject: window: resync instead of freezing when the host races beyond the window
+
+IHS_SessionPacketsWindowAdd ignored any packet whose id was more than a whole
+window (2048 packets) ahead of the tail. On a Wi-Fi link a single loss burst
+that large freezes the tail there: every subsequent packet is also beyond the
+window and dropped, the window never fills so the overflow reset never fires,
+and the data channel is wedged for the rest of the session - the picture
+freezes while new video keeps arriving with ever-higher ids (measured on a PS5:
+36 video frames submitted, then zero while the host sent ids climbing past
+18000 at 550 packets/s). Return false in that case so the caller's overflow
+handler resets the window, re-adds this packet as the new tail, and signals
+DataLost to pull a keyframe - the same forward resync a jitter buffer does.
+
+diff -ru a/src/session/window.c b/src/session/window.c
+--- a/src/session/window.c	2026-10-08 20:23:17.781259177 -0700
++++ b/src/session/window.c	2026-10-08 20:23:17.831051168 -0700
+@@ -95,9 +95,18 @@
+     if (tailOffset < 0 && -tailOffset > IHS_SessionPacketsWindowSize(window)) {
+         return true;
+     }
+-    /* Not sure why but the offset is significantly larger than window capacity. Ignore it reset */
++    /*
++     * The host is more than a whole window ahead of us: a loss burst dropped so
++     * many packets that the one that would advance the tail never came. The
++     * original code ignored the packet, but that freezes the tail forever -
++     * every later packet is now also beyond the window and dropped, so the
++     * channel never recovers (a frozen picture while audio keeps going, no
++     * overflow logged because Add keeps "succeeding"). Treat it like an
++     * overflow so the caller resets the window, resyncs to this packet, and
++     * asks the host for a keyframe.
++     */
+     if (tailOffset > window->capacity) {
+-        return true;
++        return false;
+     }
+     /* Large offset means overflow, abort processing and hangup */
+     if (tailOffset > (int) IHS_SessionPacketsWindowAvailable(window)) {

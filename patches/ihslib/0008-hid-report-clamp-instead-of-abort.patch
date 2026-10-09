@@ -1,0 +1,48 @@
+From: steamlink-ps5
+Subject: hid: clamp report length instead of aborting the title
+
+IHS_HIDReportHolderAddFull asserted holder->reportLength >= len. The host sets
+the report length it will parse and may ask for one shorter than the device's
+fixed report (seen on a PS5: host requests 48 bytes, a later RequestFullReport
+adds the 48-byte report while reportLength was left shorter), so the assert
+called abort() and the title crashed a few seconds into every stream. Clamp the
+copied length to what the host asked for, and let the first report define the
+length when the host has not set one yet. Same guard on the delta path.
+
+diff -ru a/src/hid/report.c b/src/hid/report.c
+--- a/src/hid/report.c	2026-10-08 17:01:34.252407430 -0700
++++ b/src/hid/report.c	2026-10-08 20:30:17.998481317 -0700
+@@ -83,7 +83,20 @@
+ }
+ 
+ void IHS_HIDReportHolderAddFull(IHS_HIDReportHolder *holder, const uint8_t *current, size_t len) {
+-    assert(holder->reportLength >= len);
++    /*
++     * The device produces a fixed-size report, but the host decides the report
++     * length it will parse (CHIDMessageToRemote.DeviceStartInputReports.length)
++     * and a RequestFullReport can arrive with that length still shorter than the
++     * device's report. The original assert turned that mismatch into abort(),
++     * killing the whole title a few seconds into a stream once the host asked
++     * for a shorter DualSense report. Clamp instead: never emit more than the
++     * host asked for, and if it has not asked yet, let this report set the size.
++     */
++    if (holder->reportLength == 0) {
++        holder->reportLength = len;
++    } else if (len > holder->reportLength) {
++        len = holder->reportLength;
++    }
+     if (DedupAndStash(holder, current, len)) {
+         return;
+     }
+@@ -103,6 +116,11 @@
+ 
+ void IHS_HIDReportHolderAddDelta(IHS_HIDReportHolder *holder, const uint8_t *previous, const uint8_t *current,
+                                  size_t len) {
++    if (holder->reportLength == 0) {
++        holder->reportLength = len;
++    } else if (len > holder->reportLength) {
++        len = holder->reportLength;
++    }
+     if (DedupAndStash(holder, current, len)) {
+         return;
+     }

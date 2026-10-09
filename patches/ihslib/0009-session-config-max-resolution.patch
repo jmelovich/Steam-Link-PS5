@@ -1,0 +1,52 @@
+From: steamlink-ps5
+Subject: session: let the application cap the streaming resolution
+
+The negotiation hard-coded maximum_resolution_x/y = 0 and advertised a single
+1920x1080 video mode, so the host always streamed at its own resolution no
+matter what the stream request asked for. On a weak link the full-resolution
+keyframes are too large to arrive intact, so after any loss the client waits
+seconds for a keyframe to resync. Add maxResolutionX/Y to IHS_SessionConfig
+(0 keeps the old behaviour) and feed them to both the advertised video mode and
+the maximum-resolution capability, so the host downscales and keyframes shrink.
+
+diff -ru a/include/ihslib/session.h b/include/ihslib/session.h
+--- a/include/ihslib/session.h	2026-10-08 20:51:02.919772954 -0700
++++ b/include/ihslib/session.h	2026-10-08 20:51:02.934202624 -0700
+@@ -52,6 +52,12 @@
+      * Quality preset asked of the host: 0 (default) = Balanced, 1 = Fast, 2 = Beautiful.
+      */
+     int32_t quality;
++    /**
++     * Cap on the streaming resolution asked of the host; 0 leaves the host at
++     * its own resolution. The host downscales its capture to fit.
++     */
++    int32_t maxResolutionX;
++    int32_t maxResolutionY;
+ } IHS_SessionConfig;
+ 
+ typedef struct IHS_StreamSessionCallbacks {
+diff -ru a/src/session/channels/ch_control_negotiation.c b/src/session/channels/ch_control_negotiation.c
+--- a/src/session/channels/ch_control_negotiation.c	2026-10-08 20:51:02.918970394 -0700
++++ b/src/session/channels/ch_control_negotiation.c	2026-10-08 20:51:02.934327647 -0700
+@@ -124,8 +124,8 @@
+     config.selected_video_codec = videoCodec;
+ 
+     CStreamVideoMode availableVideoMode = CSTREAM_VIDEO_MODE__INIT;
+-    availableVideoMode.width = 1920;
+-    availableVideoMode.height = 1080;
++    availableVideoMode.width = ihsConf.maxResolutionX > 0 ? ihsConf.maxResolutionX : 1920;
++    availableVideoMode.height = ihsConf.maxResolutionY > 0 ? ihsConf.maxResolutionY : 1080;
+     PROTOBUF_C_SET_VALUE(availableVideoMode, refresh_rate_numerator, 5994);
+     PROTOBUF_C_SET_VALUE(availableVideoMode, refresh_rate_denominator, 100);
+ 
+@@ -137,8 +137,8 @@
+ 
+     CStreamingClientConfig clientConfig = CSTREAMING_CLIENT_CONFIG__INIT;
+ 
+-    PROTOBUF_C_SET_VALUE(clientConfig, maximum_resolution_x, 0);
+-    PROTOBUF_C_SET_VALUE(clientConfig, maximum_resolution_y, 0);
++    PROTOBUF_C_SET_VALUE(clientConfig, maximum_resolution_x, ihsConf.maxResolutionX > 0 ? ihsConf.maxResolutionX : 0);
++    PROTOBUF_C_SET_VALUE(clientConfig, maximum_resolution_y, ihsConf.maxResolutionY > 0 ? ihsConf.maxResolutionY : 0);
+     PROTOBUF_C_SET_VALUE(clientConfig, enable_hardware_decoding, true);
+     PROTOBUF_C_SET_VALUE(clientConfig, enable_performance_overlay, true);
+     if (ihsConf.enableAudio) {

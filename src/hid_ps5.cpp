@@ -425,9 +425,11 @@ int device_serial_string(IHS_HIDDevice *device, IHS_Buffer *out)
     return device_string(device, out, "");
 }
 
-int device_start_input_reports(IHS_HIDDevice *device, std::size_t)
+int device_start_input_reports(IHS_HIDDevice *device, std::size_t length)
 {
     auto *self = reinterpret_cast<Device *>(device);
+    slp::log("hid: host wants input reports of %zu bytes from pad %d", length, self->slot);
+    // The library clamps the report to the host's requested length, so always offer it.
     IHS_HIDDeviceReportAddFull(device, reinterpret_cast<const std::uint8_t *>(&self->current), sizeof(Report));
     self->previous = self->current;
     return 0;
@@ -600,9 +602,53 @@ IHS_HIDProvider *provider()
     return g_provider;
 }
 
+namespace
+{
+LocalButtons decode_buttons(std::uint32_t b)
+{
+    LocalButtons out{};
+    out.options = (b & PAD_OPTIONS) != 0;
+    out.touchpad = (b & PAD_TOUCH) != 0;
+    out.l3 = (b & PAD_L3) != 0;
+    out.r3 = (b & PAD_R3) != 0;
+    out.up = (b & PAD_UP) != 0;
+    out.down = (b & PAD_DOWN) != 0;
+    out.left = (b & PAD_LEFT) != 0;
+    out.right = (b & PAD_RIGHT) != 0;
+    out.cross = (b & PAD_CROSS) != 0;
+    out.circle = (b & PAD_CIRCLE) != 0;
+    out.triangle = (b & PAD_TRIANGLE) != 0;
+    out.square = (b & PAD_SQUARE) != 0;
+    return out;
+}
+} // namespace
+
 LocalButtons primary_buttons()
 {
-    const std::uint32_t b = g_primary_buttons;
-    return {(b & PAD_OPTIONS) != 0, (b & PAD_TOUCH) != 0, (b & PAD_L3) != 0, (b & PAD_R3) != 0};
+    return decode_buttons(g_primary_buttons);
+}
+
+LocalButtons poll_primary()
+{
+    std::int32_t handle;
+    {
+        std::lock_guard lock{g_mutex};
+        if (!g_ready)
+            return {};
+        // Keep the pad list current while no session polls it.
+        const std::uint64_t now = now_us();
+        if (now - g_last_scan_us > 1000000u)
+        {
+            g_last_scan_us = now;
+            scan_locked();
+        }
+        handle = g_slots[0].handle;
+    }
+    PadSample sample{};
+    if (handle < 0 || scePadReadState(handle, &sample) < 0 || !sample.connected ||
+        (sample.buttons & PAD_INTERCEPTED))
+        return {};
+    g_primary_buttons = sample.buttons;
+    return decode_buttons(sample.buttons);
 }
 } // namespace slp::hid

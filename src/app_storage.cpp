@@ -27,6 +27,7 @@ namespace slp
 {
 namespace
 {
+void settings_load();
 std::string g_data_dir;
 Identity g_identity{};
 int g_log_fd = -1;
@@ -94,6 +95,7 @@ void storage_init()
         load_or_create_identity();
     else
         random_bytes(&g_identity, sizeof g_identity);
+    settings_load();
 }
 
 const char *data_dir()
@@ -139,6 +141,82 @@ void host_key_save(std::uint64_t host_client_id, const std::uint8_t key[32])
         return;
     }
     write(fd, key, 32);
+    close(fd);
+}
+
+namespace
+{
+Settings g_settings;
+
+std::string settings_path()
+{
+    return g_data_dir + "/settings.txt";
+}
+
+void settings_load()
+{
+    if (g_data_dir.empty())
+        return;
+    const int fd = open(settings_path().c_str(), O_RDONLY);
+    if (fd < 0)
+        return;
+    char text[1024] = {};
+    const ssize_t got = read(fd, text, sizeof text - 1);
+    close(fd);
+    if (got <= 0)
+        return;
+    char *save = nullptr;
+    for (char *line = strtok_r(text, "\n", &save); line; line = strtok_r(nullptr, "\n", &save))
+    {
+        char *eq = std::strchr(line, '=');
+        if (!eq)
+            continue;
+        *eq = '\0';
+        const char *key = line;
+        const char *value = eq + 1;
+        if (!std::strcmp(key, "max_height"))
+            g_settings.max_height = static_cast<std::uint32_t>(std::atoi(value)) == 720 ? 720 : 1080;
+        else if (!std::strcmp(key, "hevc"))
+            g_settings.hevc = std::atoi(value) != 0;
+        else if (!std::strcmp(key, "audio_channels"))
+            g_settings.audio_channels = std::atoi(value) == 6 ? 6 : 2;
+        else if (!std::strcmp(key, "last_host"))
+            g_settings.last_host = std::strtoull(value, nullptr, 10);
+        else if (!std::strcmp(key, "auto_connect"))
+            g_settings.auto_connect = std::atoi(value) != 0;
+        else if (!std::strcmp(key, "bitrate_kbps"))
+            g_settings.bitrate_kbps = static_cast<std::uint32_t>(std::atoi(value));
+        else if (!std::strcmp(key, "quality"))
+            g_settings.quality = static_cast<std::uint32_t>(std::atoi(value)) % 3;
+    }
+    if (g_settings.bitrate_kbps < 2000 || g_settings.bitrate_kbps > 60000)
+        g_settings.bitrate_kbps = 5000;
+    log("settings: max_height=%u hevc=%d audio=%u last_host=%llu auto_connect=%d", g_settings.max_height,
+        g_settings.hevc, g_settings.audio_channels, static_cast<unsigned long long>(g_settings.last_host),
+        g_settings.auto_connect);
+}
+} // namespace
+
+Settings &settings()
+{
+    return g_settings;
+}
+
+void settings_save()
+{
+    if (g_data_dir.empty())
+        return;
+    char text[256];
+    const int length = std::snprintf(
+        text, sizeof text,
+        "max_height=%u\nhevc=%d\naudio_channels=%u\nlast_host=%llu\nauto_connect=%d\nbitrate_kbps=%u\nquality=%u\n",
+        g_settings.max_height, g_settings.hevc ? 1 : 0, g_settings.audio_channels,
+        static_cast<unsigned long long>(g_settings.last_host), g_settings.auto_connect ? 1 : 0,
+        g_settings.bitrate_kbps, g_settings.quality);
+    const int fd = open(settings_path().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd < 0)
+        return;
+    write(fd, text, static_cast<size_t>(length));
     close(fd);
 }
 

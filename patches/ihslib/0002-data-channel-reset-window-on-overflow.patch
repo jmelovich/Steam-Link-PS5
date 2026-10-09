@@ -1,0 +1,66 @@
+From: steamlink-ps5
+Subject: session: reset a data channel's packet window when it overflows
+
+When a loss burst leaves the window full of a partially received frame,
+IHS_SessionPacketsWindowDiscard(window, 0) finds no newer frame head to keep
+and discards nothing, so every later packet fails to add and the channel is
+stuck for the rest of the session (an endless "Video channel items overflow!
+Available: N" with N constant, a frozen picture while audio continues). Drop
+the whole window, start again from the incoming packet and tell the host the
+data was lost so it sends a keyframe.
+
+diff -ru a/src/session/channels/ch_data.c b/src/session/channels/ch_data.c
+--- a/src/session/channels/ch_data.c	2026-10-08 19:27:34.801619600 -0700
++++ b/src/session/channels/ch_data.c	2026-10-08 19:27:34.819114915 -0700
+@@ -84,9 +84,12 @@
+     }
+     IHS_MutexLock(dataCh->windowLock);
+     if (!IHS_SessionPacketsWindowAdd(dataCh->window, packet)) {
+-        IHS_SessionLog(channel->session, IHS_LogLevelWarn, "Data", "%s channel items overflow! Available: %u",
++        IHS_SessionLog(channel->session, IHS_LogLevelWarn, "Data",
++                       "%s channel items overflow (available %u): resetting the window",
+                        DataChannelName(channel->type), IHS_SessionPacketsWindowAvailable(dataCh->window));
+-        IHS_SessionPacketsWindowDiscard(dataCh->window, 0);
++        /* A window full of a partial frame never drains: start over from this packet. */
++        IHS_SessionPacketsWindowReset(dataCh->window);
++        IHS_SessionPacketsWindowAdd(dataCh->window, packet);
+         IHS_SessionChannelDataLost(channel);
+     }
+     IHS_CondSignal(dataCh->windowCond);
+diff -ru a/src/session/window.c b/src/session/window.c
+--- a/src/session/window.c	2026-10-08 17:01:34.255289291 -0700
++++ b/src/session/window.c	2026-10-08 19:27:34.819073120 -0700
+@@ -76,6 +76,18 @@
+     free(window);
+ }
+ 
++void IHS_SessionPacketsWindowReset(IHS_SessionPacketsWindow *window) {
++    for (int i = 0, j = window->capacity; i < j; i++) {
++        if (!FrameItemIsUsed(&window->data[i])) {
++            continue;
++        }
++        FrameItemRecycle(&window->data[i]);
++    }
++    memset(window->data, 0, sizeof(IHS_SessionWindowItem) * window->capacity);
++    window->head.pos = 0;
++    window->tail.pos = -1;
++}
++
+ bool IHS_SessionPacketsWindowAdd(IHS_SessionPacketsWindow *window, IHS_SessionPacket *packet) {
+     /* Calculate distance of 2 items */
+     int tailOffset = window->tail.pos < 0 ? 1 : (int16_t) (packet->header.packetId - window->tail.id);
+diff -ru a/src/session/window.h b/src/session/window.h
+--- a/src/session/window.h	2026-10-08 17:01:34.255289291 -0700
++++ b/src/session/window.h	2026-10-08 19:27:34.819016096 -0700
+@@ -41,6 +41,11 @@
+ 
+ void IHS_SessionPacketsWindowDestroy(IHS_SessionPacketsWindow *window);
+ 
++/**
++ * Drop every packet held and start over, as right after creation.
++ */
++void IHS_SessionPacketsWindowReset(IHS_SessionPacketsWindow *window);
++
+ bool IHS_SessionPacketsWindowAdd(IHS_SessionPacketsWindow *window, IHS_SessionPacket *packet);
+ 
+ bool IHS_SessionPacketsWindowPoll(IHS_SessionPacketsWindow *window, IHS_SessionFrame *frame);

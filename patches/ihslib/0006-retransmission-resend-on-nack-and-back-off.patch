@@ -1,0 +1,177 @@
+From: steamlink-ps5
+Subject: retransmission: resend on NACK, back off instead of 21 sends in 200 ms
+
+A NACK from the host names a reliable packet it is missing, but the session
+handled it like an ACK and cancelled the retransmission. Combined with the
+fixed schedule (retry every 10 ms, give up after 20 tries) one lost packet on a
+Wi-Fi link wedged the host's control channel for the rest of the session:
+every later packet (keyframe requests, input, stats) was NACKed and the client
+had long forgotten the one the host wanted. Measured on a PS5 over Wi-Fi: 263
+distinct control packets in 6 s went out 4802 times, the host answered with
+1677 NACKs all naming the same id, and the video froze because no keyframe
+request ever got through.
+
+Also make IHS_QueuePollBy detach the polled node: it left the next pointer
+dangling, and re-appending such a node built a cycle the send thread walked
+forever.
+
+Resend the named packet on NACK (rate limited to one per 30 ms), keep pending
+packets for about 17 s with retries backing off from 60 ms to 1 s, and warn
+when the host asks for a packet that is no longer pending.
+
+diff -ru a/src/ihs_queue.c b/src/ihs_queue.c
+--- a/src/ihs_queue.c	2026-10-08 17:01:34.252783598 -0700
++++ b/src/ihs_queue.c	2026-10-08 20:07:52.979694339 -0700
+@@ -104,6 +104,8 @@
+             } else {
+                 queue->head = next;
+             }
++            /* Detach it like IHS_QueuePoll does, so it can be appended again. */
++            cur->next = NULL;
+             return item;
+         }
+         prev = cur;
+diff -ru a/src/session/retransmission.c b/src/session/retransmission.c
+--- a/src/session/retransmission.c	2026-10-08 17:01:34.255289291 -0700
++++ b/src/session/retransmission.c	2026-10-08 20:07:52.979619837 -0700
+@@ -26,13 +26,31 @@
+ #include "retransmission.h"
+ #include "session_pri.h"
+ 
+-#define RETRANSMISSION_INTERVAL 10
+ #define RETRANSMISSION_ATTEMPTS 20
++/* A NACK-driven resend of the same packet is not repeated faster than this. */
++#define RESEND_MIN_INTERVAL_MS 30
++
++/*
++ * Delay before the n-th retry (n >= 1). The old fixed 10 ms schedule sent every
++ * reliable packet 21 times in 200 ms and then forgot it: on a Wi-Fi link whose
++ * round trip is longer than 10 ms every packet went out several times, and once
++ * one was lost for good the host NACKed every later packet forever. Back off
++ * from 60 ms to 1 s and keep the packet for about 17 s; the host's NACKs
++ * (IHS_RetransmissionResend) are what recover a lost packet quickly.
++ */
++static uint32_t RetransmissionDelay(uint8_t retransmitCount) {
++    if (retransmitCount == 0) {
++        return 60;
++    }
++    uint32_t delay = 60u << (retransmitCount - 1);
++    return delay > 1000 ? 1000 : delay;
++}
+ 
+ typedef struct IHS_QueueItem {
+     IHS_SessionPacket packet;
+     IHS_TimerTask *task;
+     IHS_SessionRetransmission *retransmission;
++    uint64_t lastSentMs;
+ } PendingRetransmission;
+ 
+ typedef struct RetransmissionQuery {
+@@ -74,9 +92,10 @@
+     pending->packet = *packet;
+     pending->retransmission = retransmission;
+     pending->packet.header.retransmitCount++;
++    pending->lastSentMs = IHS_TimerNow();
+     IHS_BufferTransferOwnership(&packet->body, &pending->packet.body);
+     pending->task = IHS_TimerTaskStart(retransmission->session->timers, RetransmissionTimerRun, RetransmissionTimerEnd,
+-                                       RETRANSMISSION_INTERVAL, pending);
++                                       RetransmissionDelay(pending->packet.header.retransmitCount), pending);
+     IHS_MutexLock(retransmission->lock);
+     IHS_QueueAppend(retransmission->queue, pending);
+     IHS_MutexUnlock(retransmission->lock);
+@@ -109,6 +128,44 @@
+     }
+     return true;
+ }
++
++bool IHS_RetransmissionResend(IHS_SessionRetransmission *retransmission, IHS_SessionChannelId channelId,
++                              uint16_t packetId, uint16_t fragmentId) {
++    RetransmissionQuery query = {
++            .channelId = channelId,
++            .packetId = packetId,
++            .fragmentId = fragmentId,
++    };
++    IHS_MutexLock(retransmission->lock);
++    PendingRetransmission *match = IHS_QueuePollBy(retransmission->queue, RetransmissionPacketPredicate, &query);
++    if (match == NULL) {
++        IHS_MutexUnlock(retransmission->lock);
++        return false;
++    }
++    uint64_t now = IHS_TimerNow();
++    /* A body of NULL means the periodic retry already handed the packet to the
++     * send queue and this entry is about to be replaced: it is on its way. */
++    bool send = match->packet.body.data != NULL && now - match->lastSentMs >= RESEND_MIN_INTERVAL_MS;
++    IHS_SessionPacket copy;
++    if (send) {
++        match->lastSentMs = now;
++        copy.header = match->packet.header;
++        copy.crc = 0;
++        IHS_SessionPacketBodyInitialize(&copy.body, copy.header.hasCrc);
++        IHS_BufferAppend(&copy.body, &match->packet.body);
++    }
++    /* Put it back; the periodic retry keeps running as the fallback. */
++    IHS_QueueAppend(retransmission->queue, match);
++    IHS_MutexUnlock(retransmission->lock);
++    if (send) {
++        IHS_SessionLog(retransmission->session, IHS_LogLevelVerbose, "Retransmission",
++                       "Resend on NACK Packet(channelId=%u, packetId=%u, fragmentId=%u)", channelId, packetId,
++                       fragmentId);
++        IHS_SessionQueuePacket(retransmission->session, &copy, false);
++        IHS_SessionPacketClear(&copy, true);
++    }
++    return true;
++}
+ 
+ static void RetransmissionQueueItemDestroy(PendingRetransmission *item, void *context) {
+     (void) context;
+diff -ru a/src/session/retransmission.h b/src/session/retransmission.h
+--- a/src/session/retransmission.h	2026-10-08 17:01:34.255289291 -0700
++++ b/src/session/retransmission.h	2026-10-08 20:07:52.979738403 -0700
+@@ -46,3 +46,10 @@
+ 
+ bool IHS_RetransmissionCancel(IHS_SessionRetransmission *retransmission, IHS_SessionChannelId channelId,
+                               uint16_t packetId, uint16_t fragmentId);
++
++/**
++ * The host NACKed a packet it is missing: send it again right away if it is
++ * still pending. Returns false when the packet was already given up on.
++ */
++bool IHS_RetransmissionResend(IHS_SessionRetransmission *retransmission, IHS_SessionChannelId channelId,
++                              uint16_t packetId, uint16_t fragmentId);
+diff -ru a/src/session/session.c b/src/session/session.c
+--- a/src/session/session.c	2026-10-08 17:01:34.255289291 -0700
++++ b/src/session/session.c	2026-10-08 20:07:52.979781217 -0700
+@@ -207,9 +207,21 @@
+ 
+     IHS_SessionChannelId channelId = packet.header.channelId;
+     IHS_SessionPacketType packetType = packet.header.type;
+-    if (packetType == IHS_SessionPacketTypeACK || packetType == IHS_SessionPacketTypeNACK) {
++    if (packetType == IHS_SessionPacketTypeACK) {
+         // Stop retransmission task
+         IHS_SessionCancelRetransmission(session, channelId, packet.header.packetId, packet.header.fragmentId);
++    } else if (packetType == IHS_SessionPacketTypeNACK) {
++        // The host is missing this packet: resend it, do not cancel it.
++        if (!IHS_RetransmissionResend(&session->retransmission, channelId, packet.header.packetId,
++                                      packet.header.fragmentId)) {
++            uint64_t now = IHS_TimerNow();
++            if (now - session->lastUnknownNackLogMs >= 5000) {
++                session->lastUnknownNackLogMs = now;
++                IHS_SessionLog(session, IHS_LogLevelWarn, "Session",
++                               "Host NACKed packet(ch=%u, id=%u) that is no longer pending", channelId,
++                               packet.header.packetId);
++            }
++        }
+     }
+     IHS_SessionChannel *channel = IHS_SessionChannelFor(session, channelId);
+     if (channel != NULL) {
+diff -ru a/src/session/session_pri.h b/src/session/session_pri.h
+--- a/src/session/session_pri.h	2026-10-08 20:07:52.940418356 -0700
++++ b/src/session/session_pri.h	2026-10-08 20:07:52.979822904 -0700
+@@ -92,6 +92,7 @@
+     struct IHS_FrameStatsAggregator *frameStats;
+     /* The id of the video frame being handed to the submit callback (for stats). */
+     uint16_t lastSubmittedVideoFrameId;
++    uint64_t lastUnknownNackLogMs;
+     struct {
+         const IHS_StreamSessionCallbacks *session;
+         const IHS_StreamAudioCallbacks *audio;

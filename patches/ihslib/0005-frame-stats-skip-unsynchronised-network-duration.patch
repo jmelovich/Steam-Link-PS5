@@ -1,0 +1,29 @@
+From: steamlink-ps5
+Subject: frame stats: do not report a network duration across unsynchronised clocks
+
+The aggregator folds "frame send" (host clock) minus "frame receive" (local
+monotonic clock) into accumulated stat 6. Without a clock offset estimate that
+value is the offset between the two clocks (tens of millions of milliseconds
+here), the host logs "Slow framerate ... (network)" and drops nearly every
+frame. Skip the stat until ihslib can estimate the offset.
+
+diff -ru a/src/session/frame_stats.c b/src/session/frame_stats.c
+--- a/src/session/frame_stats.c	2026-10-08 17:01:34.255289291 -0700
++++ b/src/session/frame_stats.c	2026-10-08 19:46:09.897657041 -0700
+@@ -190,11 +190,11 @@
+         agg->lastFrameTimestamp = slot->events[EV_COMPLETE];
+     }
+ 
+-    /* Network duration (stat 6): event 12 → 13. */
+-    if (has_event(slot, EV_FRAME_SEND) && has_event(slot, EV_FRAME_RECV)) {
+-        accum_add(accum, 6,
+-                  ticks_to_ms(slot->events[EV_FRAME_SEND], slot->events[EV_FRAME_RECV]));
+-    }
++    /* Network duration (stat 6): event 12 → 13. Event 12 is stamped with the
++     * host's clock and event 13 with ours, and nothing synchronises the two,
++     * so the difference is the clock offset (hours), not a network delay.
++     * Steam reads it as "network is the bottleneck" and drops nearly every
++     * frame. Leave the stat out until a clock offset estimate exists. */
+     /* Decode duration (stat 7): event 14 → 15. */
+     if (has_event(slot, EV_DECODE_BEGIN) && has_event(slot, EV_DECODE_END)) {
+         accum_add(accum, 7,
