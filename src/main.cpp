@@ -105,6 +105,28 @@ void ihs_log(IHS_LogLevel level, const char *tag, const char *message)
     slp::log("[IHS.%s %s] %s", tag, IHS_LogLevelName(level), message);
 }
 
+// ---- crypto self-test: the pairing ticket is RSA-OAEP encrypted; a silent failure
+// there makes Steam reject every PIN. ihslib does not export these; the archive does.
+extern "C" int IHS_CryptoRSAEncrypt(const std::uint8_t *in, std::size_t in_length, const std::uint8_t *key,
+                                    std::size_t key_length, std::uint8_t *out, std::size_t *out_length);
+extern "C" bool IHS_ClientAuthorizationPubKey(IHS_Client *client, IHS_SteamUniverse universe, std::uint8_t *key,
+                                              std::size_t *key_length);
+extern "C" std::uint32_t IHS_CryptoRandomUInt32();
+
+void crypto_self_test(IHS_Client *client)
+{
+    std::uint8_t key[384];
+    std::size_t key_length = sizeof key;
+    const bool have_key = IHS_ClientAuthorizationPubKey(client, IHS_SteamUniversePublic, key, &key_length);
+    std::uint8_t out[2048];
+    std::size_t out_length = sizeof out;
+    const std::uint8_t plain[] = "self-test";
+    const int result = IHS_CryptoRSAEncrypt(plain, sizeof plain, key, key_length, out, &out_length);
+    slp::log("crypto self-test: pubkey %s (%zu bytes), rsa encrypt result %d (-0x%x), %zu bytes out, random %u",
+             have_key ? "ok" : "MISSING", key_length, result, static_cast<unsigned>(-result), out_length,
+             IHS_CryptoRandomUInt32());
+}
+
 // ---- client phase: discovery, authorization, streaming request -------------
 
 struct ClientFlow
@@ -116,6 +138,7 @@ struct ClientFlow
     bool have_session = false;
     IHS_SessionInfo session{};
     char pin[8] = {};
+    std::uint8_t host_key[32] = {};
 };
 
 void request_stream(IHS_Client *client, ClientFlow &flow)
@@ -151,6 +174,12 @@ void on_discovered(IHS_Client *client, const IHS_HostInfo *host, void *context)
         status.host = std::string{host->hostname} + " " + address;
     }
     free(address);
+    // Already paired with this PC: the stream request must use the key negotiated then.
+    if (slp::host_key_load(host->clientId, flow.host_key))
+    {
+        IHS_ClientSetSecretKey(client, flow.host_key);
+        slp::log("using the stored key for %s", host->hostname);
+    }
     request_stream(client, flow);
 }
 
@@ -163,6 +192,9 @@ void on_authorization_success(IHS_Client *client, const IHS_HostInfo *, std::uin
 {
     auto &flow = *static_cast<ClientFlow *>(context);
     slp::log("authorized, steam id %llu", static_cast<unsigned long long>(steam_id));
+    // The client now holds the key negotiated with this host; keep it for next time.
+    IHS_ClientGetSecretKey(client, flow.host_key);
+    slp::host_key_save(flow.host.clientId, flow.host_key);
     {
         std::lock_guard lock{status.mutex};
         status.pin.clear();
@@ -307,9 +339,11 @@ void *flow_thread(void *)
     {
         flow.host_chosen = false;
         flow.have_session = false;
+        flow.authorization_tried = false;
         set_state("LOOKING FOR A PC RUNNING STEAM");
         IHS_Client *client = IHS_ClientCreate(&flow.config);
         IHS_ClientSetLogFunction(client, ihs_log);
+        crypto_self_test(client);
         IHS_ClientDiscoveryCallbacks discovery{};
         discovery.discovered = on_discovered;
         IHS_ClientAuthorizationCallbacks authorization{};
@@ -330,7 +364,9 @@ void *flow_thread(void *)
 
         if (flow.have_session)
         {
-            IHS_Session *session = IHS_SessionCreate(&flow.config, &flow.session);
+            IHS_ClientConfig session_config = flow.config;
+            session_config.secretKey = flow.host_key;
+            IHS_Session *session = IHS_SessionCreate(&session_config, &flow.session);
             IHS_SessionSetLogFunction(session, ihs_log);
             IHS_StreamSessionCallbacks session_callbacks{};
             session_callbacks.configuring = on_session_configuring;
@@ -357,7 +393,8 @@ void *flow_thread(void *)
                 slp::log("IHS_SessionConnect failed");
             IHS_SessionDestroy(session);
         }
-        sleep(5);
+        // A failed pairing re-prompts the PC on every retry: back off properly.
+        sleep(flow.authorization_tried && !flow.have_session ? 60 : 5);
     }
     return nullptr;
 }

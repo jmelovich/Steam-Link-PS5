@@ -26,4 +26,9 @@ const char *data_dir();
 const Identity &identity();
 // Console entropy (sysctl kern.rng_pseudo). Not for keys that leave the console.
 void random_bytes(void *destination, std::size_t length);
+
+// Pairing negotiates a 32-byte secret per host (Steam's PIN-masked key exchange);
+// streaming from that host needs the same key again. Keyed by the host's client id.
+bool host_key_load(std::uint64_t host_client_id, std::uint8_t key[32]);
+void host_key_save(std::uint64_t host_client_id, const std::uint8_t key[32]);
 } // namespace slp

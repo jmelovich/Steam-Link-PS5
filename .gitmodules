@@ -1,6 +1,7 @@
 [submodule "third_party/ihslib"]
 	path = third_party/ihslib
-	url = https://github.com/mariotaku/ihslib.git
+	url = https://github.com/scaronni/ihslib.git
+	branch = auth
 [submodule "third_party/protobuf-c"]
 	path = third_party/protobuf-c
 	url = https://github.com/protobuf-c/protobuf-c.git

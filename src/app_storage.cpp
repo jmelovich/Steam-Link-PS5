@@ -106,6 +106,42 @@ const Identity &identity()
     return g_identity;
 }
 
+namespace
+{
+std::string host_key_path(std::uint64_t host_client_id)
+{
+    char name[64];
+    std::snprintf(name, sizeof name, "/host-%016llx.key", static_cast<unsigned long long>(host_client_id));
+    return g_data_dir + name;
+}
+} // namespace
+
+bool host_key_load(std::uint64_t host_client_id, std::uint8_t key[32])
+{
+    if (g_data_dir.empty())
+        return false;
+    const int fd = open(host_key_path(host_client_id).c_str(), O_RDONLY);
+    if (fd < 0)
+        return false;
+    const ssize_t got = read(fd, key, 32);
+    close(fd);
+    return got == 32;
+}
+
+void host_key_save(std::uint64_t host_client_id, const std::uint8_t key[32])
+{
+    if (g_data_dir.empty())
+        return;
+    const int fd = open(host_key_path(host_client_id).c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd < 0)
+    {
+        log("host key could not be saved: %s", std::strerror(errno));
+        return;
+    }
+    write(fd, key, 32);
+    close(fd);
+}
+
 void random_bytes(void *destination, std::size_t length)
 {
     if (ps5_get_random(destination, length) != 0)
