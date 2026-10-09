@@ -1,0 +1,12 @@
+[submodule "third_party/ihslib"]
+	path = third_party/ihslib
+	url = https://github.com/mariotaku/ihslib.git
+[submodule "third_party/protobuf-c"]
+	path = third_party/protobuf-c
+	url = https://github.com/protobuf-c/protobuf-c.git
+[submodule "third_party/mbedtls"]
+	path = third_party/mbedtls
+	url = https://github.com/Mbed-TLS/mbedtls.git
+[submodule "third_party/opus"]
+	path = third_party/opus
+	url = https://github.com/xiph/opus.git

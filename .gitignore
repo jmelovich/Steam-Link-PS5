@@ -2,15 +2,23 @@
 /build/
 /dist/
 /.deps/
+/.local/
+__pycache__/
+*.pyc
 *.o
 *.a
 *.elf
-eboot.bin
+*.self
+*.prx
+*.sprx
+*.pkg
+*.log
 
-# Host presentation assets that must stay out of git (see PLAN.md)
+# Home-screen presentation assets stay local (docs/PLATFORM_NOTES.md): the build
+# accepts a title with just icon0.png
 /sce_sys/pic0.dds
 /sce_sys/pic1.dds
 /sce_sys/snd0.at9
 
-# Local overrides
+# Local overrides (see .env.example)
 /.env
