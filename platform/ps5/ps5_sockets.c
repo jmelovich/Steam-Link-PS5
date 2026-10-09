@@ -112,6 +112,19 @@ ps5_network_metrics_t ps5_network_metrics_read(void)
     return result;
 }
 
+/* steamlink-ps5: a title's UDP socket defaults to a 42 KB receive buffer, about
+ * 11 ms of a 30 Mbit/s video stream; sceNet clamps requests to 512 KB. Ask for
+ * the maximum on every datagram socket so the stream library need not know. */
+static void ps5_socket_enlarge_buffers(int socket_id, int type)
+{
+    if (type != SOCK_DGRAM)
+        return;
+    int size = 4 * 1024 * 1024;
+    (void)sceNetSetsockopt(socket_id, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size));
+    size = 1024 * 1024;
+    (void)sceNetSetsockopt(socket_id, SOL_SOCKET, SO_SNDBUF, &size, sizeof(size));
+}
+
 int socket(int domain, int type, int protocol)
 {
     /* libcurl adds the BSD flags to the type. sceNetSocket takes the bare
@@ -126,7 +139,9 @@ int socket(int domain, int type, int protocol)
     flags |= SOCK_NONBLOCK;
     nonblocking = (type & SOCK_NONBLOCK) != 0;
 #endif
-    const int id = network_result(sceNetSocket("moonlight", domain, type & ~flags, protocol));
+    const int id = network_result(sceNetSocket("steamlink", domain, type & ~flags, protocol));
+    if (id >= 0)
+        ps5_socket_enlarge_buffers(id, type & ~flags);
     if (id >= 0 && nonblocking) {
         const int on = 1;
         (void)sceNetSetsockopt(id, SOL_SOCKET, 0x1200 /* SO_NBIO */, &on, sizeof(on));

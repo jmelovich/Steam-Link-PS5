@@ -19,13 +19,18 @@ extern "C"
 
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <netinet/in.h>
 #include <pthread.h>
 #include <string>
+#include <sys/socket.h>
 #include <unistd.h>
+
+extern "C" int ps5_socket_close(int socket); // platform/ps5/ps5_sockets.c
 
 namespace
 {
@@ -112,6 +117,29 @@ extern "C" int IHS_CryptoRSAEncrypt(const std::uint8_t *in, std::size_t in_lengt
 extern "C" bool IHS_ClientAuthorizationPubKey(IHS_Client *client, IHS_SteamUniverse universe, std::uint8_t *key,
                                               std::size_t *key_length);
 extern "C" std::uint32_t IHS_CryptoRandomUInt32();
+
+// What the console's UDP sockets allow: ihslib never sets SO_RCVBUF, and a small
+// default would drop video packets wholesale.
+void socket_self_test()
+{
+    const int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (fd < 0)
+    {
+        slp::log("socket self-test: socket() failed: %s", std::strerror(errno));
+        return;
+    }
+    int value = 0;
+    socklen_t length = sizeof value;
+    getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &value, &length);
+    const int initial = value;
+    int wanted = 4 * 1024 * 1024;
+    const int set_result = setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &wanted, sizeof wanted);
+    value = 0;
+    length = sizeof value;
+    getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &value, &length);
+    slp::log("socket self-test: SO_RCVBUF default %d, set 4 MiB -> %d (now %d)", initial, set_result, value);
+    ps5_socket_close(fd);
+}
 
 void crypto_self_test(IHS_Client *client)
 {
@@ -343,7 +371,13 @@ void *flow_thread(void *)
         set_state("LOOKING FOR A PC RUNNING STEAM");
         IHS_Client *client = IHS_ClientCreate(&flow.config);
         IHS_ClientSetLogFunction(client, ihs_log);
-        crypto_self_test(client);
+        static bool self_tested = false;
+        if (!self_tested)
+        {
+            self_tested = true;
+            crypto_self_test(client);
+            socket_self_test();
+        }
         IHS_ClientDiscoveryCallbacks discovery{};
         discovery.discovered = on_discovered;
         IHS_ClientAuthorizationCallbacks authorization{};
@@ -388,7 +422,33 @@ void *flow_thread(void *)
             IHS_SessionSetInputCallbacks(session, &input_callbacks, nullptr);
             set_state("CONNECTING SESSION");
             if (IHS_SessionConnect(session))
+            {
+                // Progress every 5 s while the session runs, so the log tells the story.
+                pthread_t reporter;
+                std::atomic<bool> stop{false};
+                auto report = [](void *arg) -> void * {
+                    auto &stop_flag = *static_cast<std::atomic<bool> *>(arg);
+                    std::uint64_t last_video = 0, last_audio = 0;
+                    while (!stop_flag.load())
+                    {
+                        sleep(5);
+                        const std::uint64_t video = status.video_frames.load(), audio = status.audio_frames.load();
+                        slp::log("stats: video %llu frames (+%llu) %llu bytes, audio %llu frames (+%llu) %llu bytes",
+                                 static_cast<unsigned long long>(video), static_cast<unsigned long long>(video - last_video),
+                                 static_cast<unsigned long long>(status.video_bytes.load()),
+                                 static_cast<unsigned long long>(audio), static_cast<unsigned long long>(audio - last_audio),
+                                 static_cast<unsigned long long>(status.audio_bytes.load()));
+                        last_video = video;
+                        last_audio = audio;
+                    }
+                    return nullptr;
+                };
+                const bool reporting = pthread_create(&reporter, nullptr, report, &stop) == 0;
                 IHS_SessionThreadedJoin(session);
+                stop = true;
+                if (reporting)
+                    pthread_join(reporter, nullptr);
+            }
             else
                 slp::log("IHS_SessionConnect failed");
             IHS_SessionDestroy(session);
