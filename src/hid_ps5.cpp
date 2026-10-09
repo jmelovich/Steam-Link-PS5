@@ -11,6 +11,7 @@
 
 #include "hid_ps5.hpp"
 #include "app_log.hpp"
+#include "app_storage.hpp"
 
 extern "C"
 {
@@ -23,7 +24,10 @@ extern "C"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fcntl.h>
 #include <mutex>
+#include <string>
+#include <unistd.h>
 
 extern "C"
 {
@@ -571,9 +575,15 @@ void provider_device_info(IHS_HIDProvider *, IHS_Enumeration *enumeration, IHS_H
     info->path = slot.path;
     info->product_string = "DualSense Wireless Controller";
     info->serial_number = "";
-    info->vendor_id = VENDOR_SONY;
-    info->product_id = PRODUCT_DUALSENSE;
-    info->product_version = 0x100;
+    // Advertise no VID/PID so the host treats the pad as a generic gamepad and
+    // requests the 48-byte SDL-canonical report we produce. With the real
+    // DualSense VID/PID the host modelled a native 73-byte report our 48-byte
+    // reports could not fill, and input was never applied.
+    info->vendor_id = 0;
+    info->product_id = 0;
+    info->product_version = 0;
+    (void)VENDOR_SONY;
+    (void)PRODUCT_DUALSENSE;
 }
 
 const IHS_HIDProviderClass provider_class = {
