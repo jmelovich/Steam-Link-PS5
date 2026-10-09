@@ -1,0 +1,24 @@
+From: steamlink-ps5
+Subject: session: drop a data-channel packet of an unexpected type instead of asserting
+
+Over a lossy link a data channel occasionally receives a packet whose type is
+not Unreliable/UnreliableFrag (seen on a PS5 over Wi-Fi: an audio channel
+overflow followed by the assertion). Release builds of other clients have
+assertions compiled out and simply process the packet; abort() here takes the
+whole title down. Log and drop it.
+
+--- a/src/session/channels/ch_data.c
++++ b/src/session/channels/ch_data.c
+@@ -77,7 +77,11 @@
+     IHS_SessionChannelData *dataCh = (IHS_SessionChannelData *) channel;
+     assert(dataCh->window != NULL);
+     IHS_SessionPacketType type = packet->header.type;
+-    assert(type == IHS_SessionPacketTypeUnreliable || type == IHS_SessionPacketTypeUnreliableFrag);
++    if (type != IHS_SessionPacketTypeUnreliable && type != IHS_SessionPacketTypeUnreliableFrag) {
++        IHS_SessionLog(channel->session, IHS_LogLevelWarn, "Data", "%s channel: dropping packet of type %d",
++                       DataChannelName(channel->type), (int) type);
++        return;
++    }
+     IHS_MutexLock(dataCh->windowLock);
+     if (!IHS_SessionPacketsWindowAdd(dataCh->window, packet)) {
+         IHS_SessionLog(channel->session, IHS_LogLevelWarn, "Data", "%s channel items overflow! Available: %u",

@@ -13,11 +13,13 @@
 #include "video.hpp"
 #include "app_log.hpp"
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <mutex>
+#include <pthread.h>
 #include <unistd.h>
 
 namespace slp::video
@@ -184,10 +186,12 @@ struct Decoder
     bool needs_reset = false;
     videodec2_decoder_config config{};
 
-    // Two RGBA output buffers, so the presenter reads one while we write the other.
-    std::uint32_t *rgba[2] = {nullptr, nullptr};
+    // Three RGBA output buffers: the newest complete one (front), the one the
+    // presenter is drawing from (presenting), and one free for the next convert.
+    std::uint32_t *rgba[3] = {nullptr, nullptr, nullptr};
     std::uint32_t rgba_capacity = 0;
     int rgba_front = -1;
+    int rgba_presenting = -1;
     std::uint32_t frame_width = 0;
     std::uint32_t frame_height = 0;
     std::uint64_t serial = 0;
@@ -225,6 +229,7 @@ void release_all()
     }
     g.rgba_capacity = 0;
     g.rgba_front = -1;
+    g.rgba_presenting = -1;
 }
 
 // BT.601 limited-range NV12 -> RGBA8888 (Steam captures BT.601 limited). One
@@ -254,6 +259,118 @@ void convert_nv12(const std::uint8_t *nv12, std::uint32_t pitch, std::uint32_t c
             out[col] = 0xff000000u | (b << 16) | (gg << 8) | r;
         }
     }
+}
+// ---- convert thread pool -----------------------------------------------------
+// One frame converts ~1.5 M pixels; split across workers it stays well under a
+// frame period on the console's Zen 2 cores. Workers are persistent; a job is a
+// generation bump, each worker takes its band of rows.
+constexpr int k_workers = 4;
+
+struct ConvertJob
+{
+    const std::uint8_t *nv12;
+    std::uint32_t pitch, coded_height, width, height;
+    std::uint32_t *rgba;
+};
+
+struct Pool
+{
+    pthread_t threads[k_workers]{};
+    bool started = false;
+    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t wake = PTHREAD_COND_INITIALIZER;
+    pthread_cond_t done = PTHREAD_COND_INITIALIZER;
+    std::uint64_t generation = 0;
+    int pending = 0;
+    bool quit = false;
+    ConvertJob job{};
+};
+Pool pool;
+
+void convert_band(const ConvertJob &job, int worker)
+{
+    const std::uint32_t band = (job.height + k_workers - 1) / k_workers;
+    const std::uint32_t first = band * static_cast<std::uint32_t>(worker);
+    if (first >= job.height)
+        return;
+    const std::uint32_t rows = first + band > job.height ? job.height - first : band;
+    // Same maths as convert_nv12, over rows [first, first + rows).
+    const std::uint8_t *y_plane = job.nv12;
+    const std::uint8_t *uv_plane = job.nv12 + static_cast<std::size_t>(job.pitch) * job.coded_height;
+    for (std::uint32_t row = first; row < first + rows; ++row)
+    {
+        const std::uint8_t *y_row = y_plane + static_cast<std::size_t>(row) * job.pitch;
+        const std::uint8_t *uv_row = uv_plane + static_cast<std::size_t>(row / 2) * job.pitch;
+        std::uint32_t *out = job.rgba + static_cast<std::size_t>(row) * job.width;
+        for (std::uint32_t col = 0; col < job.width; ++col)
+        {
+            const int c = static_cast<int>(y_row[col]) - 16;
+            const int d = static_cast<int>(uv_row[(col & ~1u)]) - 128;
+            const int e = static_cast<int>(uv_row[(col & ~1u) + 1]) - 128;
+            auto clip = [](int v) -> std::uint32_t {
+                return static_cast<std::uint32_t>(v < 0 ? 0 : (v > 255 ? 255 : v));
+            };
+            const std::uint32_t r = clip((298 * c + 409 * e + 128) >> 8);
+            const std::uint32_t gg = clip((298 * c - 100 * d - 208 * e + 128) >> 8);
+            const std::uint32_t b = clip((298 * c + 516 * d + 128) >> 8);
+            out[col] = 0xff000000u | (b << 16) | (gg << 8) | r;
+        }
+    }
+}
+
+void *worker_main(void *arg)
+{
+    const int worker = static_cast<int>(reinterpret_cast<std::intptr_t>(arg));
+    std::uint64_t seen = 0;
+    for (;;)
+    {
+        pthread_mutex_lock(&pool.mutex);
+        while (!pool.quit && pool.generation == seen)
+            pthread_cond_wait(&pool.wake, &pool.mutex);
+        if (pool.quit)
+        {
+            pthread_mutex_unlock(&pool.mutex);
+            return nullptr;
+        }
+        seen = pool.generation;
+        const ConvertJob job = pool.job;
+        pthread_mutex_unlock(&pool.mutex);
+        convert_band(job, worker);
+        pthread_mutex_lock(&pool.mutex);
+        if (--pool.pending == 0)
+            pthread_cond_broadcast(&pool.done);
+        pthread_mutex_unlock(&pool.mutex);
+    }
+}
+
+void pool_start()
+{
+    if (pool.started)
+        return;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 256 * 1024);
+    for (int i = 0; i < k_workers; ++i)
+        pthread_create(&pool.threads[i], &attr, worker_main, reinterpret_cast<void *>(static_cast<std::intptr_t>(i)));
+    pthread_attr_destroy(&attr);
+    pool.started = true;
+}
+
+void convert_parallel(const ConvertJob &job)
+{
+    if (!pool.started)
+    {
+        convert_nv12(job.nv12, job.pitch, job.coded_height, job.width, job.height, job.rgba);
+        return;
+    }
+    pthread_mutex_lock(&pool.mutex);
+    pool.job = job;
+    pool.pending = k_workers;
+    ++pool.generation;
+    pthread_cond_broadcast(&pool.wake);
+    while (pool.pending > 0)
+        pthread_cond_wait(&pool.done, &pool.mutex);
+    pthread_mutex_unlock(&pool.mutex);
 }
 } // namespace
 
@@ -392,6 +509,8 @@ bool start(std::uint32_t width, std::uint32_t height, Codec codec, const std::ui
         }
     }
     g.rgba_front = -1;
+    g.rgba_presenting = -1;
+    pool_start();
     g.serial = 0;
     g.input_sequence = 0;
     g.frame_sequence = 0;
@@ -486,8 +605,11 @@ bool submit(const std::uint8_t *access_unit, std::size_t length, bool keyframe)
         slp::log("video: first picture %ux%u pitch=%u coded_h=%u format=0x%x", output.width,
                  output.height, pitch, output.height, output.frame_format);
 
-    const int back = g.rgba_front == 0 ? 1 : 0;
-    convert_nv12(nv12, pitch, decoded_height, width, height, g.rgba[back]);
+    // A buffer that is neither the newest complete one nor the one on screen.
+    int back = 0;
+    while (back == g.rgba_front || back == g.rgba_presenting)
+        ++back;
+    convert_parallel({nv12, pitch, decoded_height, width, height, g.rgba[back]});
     g.rgba_front = back;
     g.frame_width = width;
     g.frame_height = height;
@@ -506,11 +628,18 @@ bool latest(Frame &out)
     std::lock_guard lock{g.mutex};
     if (g.rgba_front < 0)
         return false;
+    g.rgba_presenting = g.rgba_front;
     out.rgba = g.rgba[g.rgba_front];
     out.width = g.frame_width;
     out.height = g.frame_height;
     out.serial = g.serial;
     return true;
+}
+
+void release(const Frame &)
+{
+    std::lock_guard lock{g.mutex};
+    g.rgba_presenting = -1;
 }
 
 bool self_test(const char *annexb_path)

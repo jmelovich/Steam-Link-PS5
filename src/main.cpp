@@ -10,7 +10,9 @@
 
 #include "app_log.hpp"
 #include "app_storage.hpp"
+#include "audio.hpp"
 #include "demo_renderer.hpp"
+#include "hid_ps5.hpp"
 #include "video.hpp"
 
 extern "C"
@@ -81,16 +83,33 @@ void draw_scene(ps5::demo::Canvas &canvas) noexcept
     // While streaming, show the decoded picture (centred) instead of the status page.
     if (status.streaming.load())
     {
-        canvas.clear(Color::background);
         slp::video::Frame frame;
         if (slp::video::latest(frame))
         {
             status.have_picture = true;
             const unsigned y = frame.height < 1080 ? (1080 - frame.height) / 2 : 0;
-            canvas.blit(frame.rgba, frame.width, frame.height, 0, y);
+            // Each VideoOut buffer remembers which picture it holds; only redraw when a
+            // newer one exists (the tiled blit is the costliest thing we do per refresh).
+            static std::uint64_t drawn[2] = {0, 0};
+            static const void *drawn_for[2] = {nullptr, nullptr};
+            const void *id = canvas.identity();
+            int i = drawn_for[0] == id ? 0 : (drawn_for[1] == id ? 1 : (drawn_for[0] == nullptr ? 0 : 1));
+            if (drawn_for[i] != id || drawn[i] == 0)
+            {
+                canvas.clear(Color::background);
+                drawn_for[i] = id;
+                drawn[i] = 0;
+            }
+            if (drawn[i] != frame.serial)
+            {
+                canvas.blit(frame.rgba, frame.width, frame.height, 0, y);
+                drawn[i] = frame.serial;
+            }
+            slp::video::release(frame);
         }
         else
         {
+            canvas.clear(Color::background);
             canvas.text(120, 500, "WAITING FOR THE FIRST PICTURE", 5, Color::cyan);
         }
         return;
@@ -358,9 +377,16 @@ int on_audio_start(IHS_Session *, const IHS_StreamAudioConfig *config, void *)
 {
     slp::log("audio start: %u Hz, %u channels, codec %d", config->frequency, config->channels,
              static_cast<int>(config->codec));
-    std::lock_guard lock{status.mutex};
-    status.audio = "audio " + std::to_string(config->frequency) + " hz " + std::to_string(config->channels) +
-                   " ch codec " + std::to_string(static_cast<int>(config->codec));
+    {
+        std::lock_guard lock{status.mutex};
+        status.audio = "audio " + std::to_string(config->frequency) + " hz " +
+                       std::to_string(config->channels) + " ch codec " +
+                       std::to_string(static_cast<int>(config->codec));
+    }
+    if (config->codec == IHS_StreamAudioCodecOpus)
+        slp::audio::start(config->frequency, config->channels);
+    else
+        slp::log("audio: codec %d not supported", static_cast<int>(config->codec));
     return 0;
 }
 
@@ -368,12 +394,14 @@ int on_audio_submit(IHS_Session *, IHS_Buffer *data, void *)
 {
     status.audio_frames.fetch_add(1);
     status.audio_bytes.fetch_add(data->size);
+    slp::audio::submit(IHS_BufferPointer(data), data->size);
     return 0;
 }
 
 void on_audio_stop(IHS_Session *, void *)
 {
     slp::log("audio stop");
+    slp::audio::stop();
 }
 
 void on_session_configuring(IHS_Session *, IHS_SessionConfig *config, void *)
@@ -382,10 +410,12 @@ void on_session_configuring(IHS_Session *, IHS_SessionConfig *config, void *)
     config->enableHevc = false;
 }
 
-void on_session_connected(IHS_Session *, void *)
+void on_session_connected(IHS_Session *session, void *)
 {
     set_state("STREAMING");
     status.streaming = true;
+    // Tell the host which controllers exist; it opens them and asks for reports.
+    IHS_SessionHIDNotifyDeviceChange(session);
 }
 
 void on_session_disconnected(IHS_Session *, void *)
@@ -465,6 +495,8 @@ void *flow_thread(void *)
             IHS_SessionSetVideoCallbacks(session, &video_callbacks, nullptr);
             IHS_SessionSetAudioCallbacks(session, &audio_callbacks, nullptr);
             IHS_SessionSetInputCallbacks(session, &input_callbacks, nullptr);
+            // The DualSense controllers, as Steam HID devices.
+            IHS_SessionHIDAddProvider(session, slp::hid::provider());
             set_state("CONNECTING SESSION");
             if (IHS_SessionConnect(session))
             {
@@ -512,6 +544,7 @@ int main()
     slp::video::prepare_modules();
     slp::storage_init();
     slp::log("Steam Remote Play for PS5 starting; data in %s", slp::data_dir());
+    slp::hid::init();
 
     // Decode a packaged test pattern and show it on a loop, independent of the
     // network, to verify the decode/convert/present path. Runs when the marker

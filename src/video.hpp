@@ -43,7 +43,8 @@ bool submit(const std::uint8_t *access_unit, std::size_t length, bool keyframe);
 void stop();
 
 // The newest decoded picture, as RGBA8888. Returns false until the first one.
-// The pointer stays valid until the next submit(); the presenter copies from it.
+// The buffer is held for the presenter until release(); the decoder writes the
+// other buffers meanwhile (triple buffering), so there is no tearing.
 struct Frame
 {
     const std::uint32_t *rgba;
@@ -52,6 +53,7 @@ struct Frame
     std::uint64_t serial;
 };
 bool latest(Frame &out);
+void release(const Frame &frame);
 
 // Decode one keyframe from a packaged Annex-B H.264 clip and present it, so the
 // decode/convert/present path can be checked with a known picture, independent of

@@ -98,21 +98,36 @@ if ! fresh "$archive" "$stamp"; then
 fi
 
 # ---- ihslib + PS5 platform layer ------------------------------------------
-# Sources: everything under src/ except the SDL backends (threads, UDP, HID) and the
-# OpenSSL crypto; the console gets the pthread backend from platform/ps5.
-mapfile -t ihslib_sources < <(find "$ihslib/src" -type f -name '*.c' \
+# ihslib is compiled from a patched copy (patches/ihslib/*.patch, applied in order)
+# so the submodule checkout stays pristine. Sources: everything under src/ except
+# the SDL backends (threads, UDP, HID) and the OpenSSL crypto; the console gets the
+# pthread backend from platform/ps5.
+ihslib_patches=("$root"/patches/ihslib/*.patch)
+[[ -e ${ihslib_patches[0]} ]] || ihslib_patches=()
+ihslib_src="$out/ihslib-src"
+patched_stamp=$(stamp_of "${ihslib_patches[@]}" "$0" $(find "$ihslib/src" "$ihslib/include" -type f | sort))
+if [[ ! -f $ihslib_src/.stamp || $(<"$ihslib_src/.stamp") != "$patched_stamp" ]]; then
+    rm -rf "$ihslib_src" && mkdir -p "$ihslib_src"
+    cp -a "$ihslib/src" "$ihslib/include" "$ihslib_src/"
+    for patch_file in "${ihslib_patches[@]}"; do
+        echo "==> [deps] ihslib: applying $(basename "$patch_file")"
+        patch -p1 -d "$ihslib_src" -s < "$patch_file" || { echo "build-deps.sh: patch failed: $patch_file" >&2; exit 1; }
+    done
+    echo "$patched_stamp" > "$ihslib_src/.stamp"
+fi
+mapfile -t ihslib_sources < <(find "$ihslib_src/src" -type f -name '*.c' \
     ! -path '*/hid/sdl/*' ! -name 'ihs_thread_sdl.c' ! -name 'ihs_udp_sdl.c' ! -name 'impl_openssl.c' | sort)
 platform_sources=("$platform/ihs_thread_posix.c" "$platform/ps5_sockets.c" "$platform/ps5_entropy.c" \
     "$platform/ps5_runtime_shims.c" "$platform/ps5_malloc.c" "$root/third_party/tlsf/tlsf.c")
 archive="$out/libihslib.a"
 stamp=$(stamp_of "${ihslib_sources[@]}" "${platform_sources[@]}" "$platform/ps5_compat.h" "$platform/mbedtls_ps5_config.h" "$0" \
-    $(find "$ihslib/include" "$ihslib/src" -type f -name '*.h' | sort))
+    $(find "$ihslib_src/include" "$ihslib_src/src" -type f -name '*.h' | sort))
 if ! fresh "$archive" "$stamp"; then
     echo "==> [deps] ihslib + platform (${#ihslib_sources[@]} + ${#platform_sources[@]} files)"
     objects=()
     # Socket descriptor calls inside ihslib route through the sceNet adapter (ps5_compat.h);
     # the adapter itself and the rest of the platform layer see the real libc names.
-    common=("${cflags[@]}" -std=gnu11 -w "-I$ihslib/include" "-I$ihslib/src" "-I$protobuf_c" "-I$mbedtls/include" "-I$platform" "${mbedtls_config[@]}")
+    common=("${cflags[@]}" -std=gnu11 -w "-I$ihslib_src/include" "-I$ihslib_src/src" "-I$protobuf_c" "-I$mbedtls/include" "-I$platform" "${mbedtls_config[@]}")
     i=0
     for source in "${ihslib_sources[@]}"; do
         object="$out/obj/ihs-$(printf '%03d' "$i")-$(basename "${source%.c}").o"
