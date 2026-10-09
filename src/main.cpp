@@ -11,6 +11,7 @@
 #include "app_log.hpp"
 #include "app_storage.hpp"
 #include "demo_renderer.hpp"
+#include "video.hpp"
 
 extern "C"
 {
@@ -23,6 +24,7 @@ extern "C"
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fcntl.h>
 #include <mutex>
 #include <netinet/in.h>
 #include <pthread.h>
@@ -48,6 +50,9 @@ struct Status
     std::atomic<std::uint64_t> video_bytes{0};
     std::atomic<std::uint64_t> audio_frames{0};
     std::atomic<std::uint64_t> audio_bytes{0};
+    std::atomic<bool> streaming{false};
+    std::atomic<bool> have_picture{false};
+    std::atomic<bool> self_test{false};
 };
 Status status;
 
@@ -72,6 +77,25 @@ std::string upper(std::string text)
 void draw_scene(ps5::demo::Canvas &canvas) noexcept
 {
     using ps5::demo::Color;
+
+    // While streaming, show the decoded picture (centred) instead of the status page.
+    if (status.streaming.load())
+    {
+        canvas.clear(Color::background);
+        slp::video::Frame frame;
+        if (slp::video::latest(frame))
+        {
+            status.have_picture = true;
+            const unsigned y = frame.height < 1080 ? (1080 - frame.height) / 2 : 0;
+            canvas.blit(frame.rgba, frame.width, frame.height, 0, y);
+        }
+        else
+        {
+            canvas.text(120, 500, "WAITING FOR THE FIRST PICTURE", 5, Color::cyan);
+        }
+        return;
+    }
+
     canvas.clear(Color::background);
     canvas.text(120, 80, "STEAM REMOTE PLAY", 10, Color::white);
     canvas.rectangle(120, 200, 1680, 6, Color::white);
@@ -293,22 +317,41 @@ int on_video_start(IHS_Session *, const IHS_StreamVideoConfig *config, void *)
 {
     slp::log("video start: %ux%u codec %d, %zu bytes codec data", config->width, config->height,
              static_cast<int>(config->codec), config->codecDataLen);
-    std::lock_guard lock{status.mutex};
-    status.video = "video " + std::to_string(config->width) + "x" + std::to_string(config->height) + " codec " +
-                   std::to_string(static_cast<int>(config->codec));
+    {
+        std::lock_guard lock{status.mutex};
+        status.video = "video " + std::to_string(config->width) + "x" + std::to_string(config->height) +
+                       " codec " + std::to_string(static_cast<int>(config->codec));
+    }
+    status.have_picture = false;
+    if (config->codec == IHS_StreamVideoCodecH264 || config->codec == IHS_StreamVideoCodecHEVC)
+    {
+        slp::video::start(config->width, config->height,
+                          config->codec == IHS_StreamVideoCodecHEVC ? slp::video::Codec::hevc
+                                                                    : slp::video::Codec::h264,
+                          config->codecData, config->codecDataLen);
+    }
+    else
+    {
+        slp::log("video: codec %d not supported", static_cast<int>(config->codec));
+    }
     return 0;
 }
 
-IHS_StreamVideoSubmitResult on_video_submit(IHS_Session *, IHS_Buffer *data, IHS_StreamVideoFrameFlag, void *)
+IHS_StreamVideoSubmitResult on_video_submit(IHS_Session *, IHS_Buffer *data, IHS_StreamVideoFrameFlag flags, void *)
 {
     status.video_frames.fetch_add(1);
     status.video_bytes.fetch_add(data->size);
-    return IHS_StreamVideoSubmitOK;
+    const bool keyframe = (flags & IHS_StreamVideoFrameKeyFrame) != 0;
+    if (slp::video::submit(IHS_BufferPointer(data), data->size, keyframe))
+        return IHS_StreamVideoSubmitOK;
+    // A failed decode (or waiting for a keyframe) asks the host to resend one.
+    return keyframe ? IHS_StreamVideoSubmitOK : IHS_StreamVideoSubmitReportLost;
 }
 
 void on_video_stop(IHS_Session *, void *)
 {
     slp::log("video stop");
+    slp::video::stop();
 }
 
 int on_audio_start(IHS_Session *, const IHS_StreamAudioConfig *config, void *)
@@ -341,11 +384,13 @@ void on_session_configuring(IHS_Session *, IHS_SessionConfig *config, void *)
 
 void on_session_connected(IHS_Session *, void *)
 {
-    set_state("STREAMING (COUNTING FRAMES)");
+    set_state("STREAMING");
+    status.streaming = true;
 }
 
 void on_session_disconnected(IHS_Session *, void *)
 {
+    status.streaming = false;
     set_state("SESSION ENDED");
 }
 
@@ -462,8 +507,31 @@ void *flow_thread(void *)
 
 int main()
 {
+    // Before storage: VideoDec2 lazily loads codec PRXs and needs the title's
+    // original filesystem namespace.
+    slp::video::prepare_modules();
     slp::storage_init();
     slp::log("Steam Remote Play for PS5 starting; data in %s", slp::data_dir());
+
+    // Decode a packaged test pattern and show it on a loop, independent of the
+    // network, to verify the decode/convert/present path. Runs when the marker
+    // asset is packaged (tools/build.sh packages assets/); a release omits it.
+    {
+        int probe = open("/app0/assets/selftest.on", 0);
+        if (probe >= 0)
+        {
+            close(probe);
+            slp::log("video self-test: decoding the packaged test pattern");
+            if (slp::video::self_test("/app0/assets/testpattern.h264"))
+            {
+                status.self_test = true;
+                status.streaming = true;
+                std::lock_guard lock{status.mutex};
+                status.state = "VIDEO SELF-TEST";
+            }
+            ps5::demo::run_frames(draw_scene, "Steam Remote Play");
+        }
+    }
 
     pthread_attr_t attr;
     pthread_attr_init(&attr);

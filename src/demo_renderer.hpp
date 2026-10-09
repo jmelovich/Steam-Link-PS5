@@ -47,6 +47,9 @@ class Canvas final
     void triangle(unsigned center_x, unsigned top, unsigned half_width, unsigned height,
                   Color color) noexcept;
     void text(unsigned x, unsigned y, std::string_view value, unsigned scale, Color color) noexcept;
+    // Copy a block of RGBA pixels into the frame at (x, y). For decoded video.
+    void blit(const std::uint32_t *source, unsigned source_width, unsigned source_height,
+              unsigned x, unsigned y) noexcept;
 
   private:
     explicit Canvas(std::uint32_t *pixels) noexcept : pixels_{pixels}

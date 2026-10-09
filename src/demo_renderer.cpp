@@ -12,6 +12,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <new>
 #include <span>
@@ -32,6 +33,7 @@ extern "C"
     int sceSystemServiceHideSplashScreen();
     int open(const char *path, int flags, ...);
     long read(int descriptor, void *buffer, std::size_t size);
+    long write(int descriptor, const void *buffer, std::size_t size);
     int close(int descriptor);
     int sceVideoOutOpen(std::int32_t user_id, std::int32_t bus_type, std::int32_t index,
                         const void *param);
@@ -365,6 +367,25 @@ void Canvas::text(unsigned x, unsigned y, std::string_view value, unsigned scale
     draw_text(pixels_, x, y, value, scale, color);
 }
 
+void Canvas::blit(const std::uint32_t *source, unsigned source_width, unsigned source_height,
+                  unsigned x, unsigned y) noexcept
+{
+    if (source == nullptr || x >= frame_width || y >= frame_height)
+        return;
+    const unsigned columns = source_width > frame_width - x ? frame_width - x : source_width;
+    const unsigned rows = source_height > frame_height - y ? frame_height - y : source_height;
+    // The frame buffer is tiled (see tiled_byte_offset): every pixel goes through the
+    // same addressing the shape and text drawing uses. A linear row copy scrambles.
+    auto *bytes = reinterpret_cast<std::uint8_t *>(pixels_);
+    for (unsigned row = 0; row < rows; ++row)
+    {
+        const std::uint32_t *line = source + static_cast<std::size_t>(row) * source_width;
+        for (unsigned column = 0; column < columns; ++column)
+            *reinterpret_cast<std::uint32_t *>(bytes + tiled_byte_offset(x + column, y + row)) =
+                line[column];
+    }
+}
+
 void read_asset_text(const char *path, std::span<char> destination,
                      std::string_view fallback) noexcept
 {
@@ -436,6 +457,8 @@ void read_asset_text(const char *path, std::span<char> destination,
     }};
     VideoAttribute attribute{};
     (void)sceVideoOutSetFlipRate(video, 0);
+    // Tiling mode 0 is the one that scans out this CPU-written buffer correctly
+    // (mode 1 gives a black screen on the console).
     sceVideoOutSetBufferAttribute2(&attribute, pixel_format_rgba8_srgb, 0, frame_width,
                                    frame_height, 0, 0, 0);
 

@@ -102,7 +102,8 @@ fi
 # OpenSSL crypto; the console gets the pthread backend from platform/ps5.
 mapfile -t ihslib_sources < <(find "$ihslib/src" -type f -name '*.c' \
     ! -path '*/hid/sdl/*' ! -name 'ihs_thread_sdl.c' ! -name 'ihs_udp_sdl.c' ! -name 'impl_openssl.c' | sort)
-platform_sources=("$platform/ihs_thread_posix.c" "$platform/ps5_sockets.c" "$platform/ps5_entropy.c" "$platform/ps5_runtime_shims.c")
+platform_sources=("$platform/ihs_thread_posix.c" "$platform/ps5_sockets.c" "$platform/ps5_entropy.c" \
+    "$platform/ps5_runtime_shims.c" "$platform/ps5_malloc.c" "$root/third_party/tlsf/tlsf.c")
 archive="$out/libihslib.a"
 stamp=$(stamp_of "${ihslib_sources[@]}" "${platform_sources[@]}" "$platform/ps5_compat.h" "$platform/mbedtls_ps5_config.h" "$0" \
     $(find "$ihslib/include" "$ihslib/src" -type f -name '*.h' | sort))
@@ -132,6 +133,21 @@ if ! fresh "$archive" "$stamp"; then
         objects+=("$object")
     done
     rm -f "$archive" && "$ar" rcs "$archive" "${objects[@]}" && echo "$stamp" > "$archive.stamp"
+fi
+
+# ---- system import stubs ---------------------------------------------------
+# VideoDec2 is a public system module the bundled SDK has no stub for. The stub
+# only describes the imports to the linker; the console resolves the real module
+# at run time. Its tiny bodies are never packaged or executed.
+mkdir -p "$out/stubs"
+stub_src="$root/vendor/ps5/sdk/stubs/videodec2_link_stub.c"
+stub_so="$out/stubs/libSceVideodec2.so"
+stamp=$(stamp_of "$stub_src" "$0")
+if ! fresh "$stub_so" "$stamp"; then
+    echo "==> [deps] libSceVideodec2 import stub"
+    "$cc" -O2 -fPIC -ffunction-sections -fdata-sections -c "$stub_src" -o "$out/obj/videodec2_stub.o"
+    "$sdk/bin/prospero-lld" --shared -soname libSceVideodec2.prx -o "$stub_so" "$out/obj/videodec2_stub.o"
+    echo "$stamp" > "$stub_so.stamp"
 fi
 
 # ---- libc++ ---------------------------------------------------------------

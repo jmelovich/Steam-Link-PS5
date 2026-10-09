@@ -259,14 +259,29 @@ if [[ -n ${pacbrew_root:-} ]]; then
 fi
 # -L: libc++'s objects carry a dependent-library note for pthread; the SDK's
 # libpthread.a is empty (threads come from libkernel) and satisfies it.
+# Extra import stubs for public system modules the bundled SDK lacks (e.g. VideoDec2),
+# built by tools/build-deps.sh. Both lld and the module writer must see them.
+import_stubs=()
+for stub in ${APP_IMPORT_STUBS:-}; do
+    [[ -f $root/$stub ]] || { echo "missing import stub: $stub" >&2; exit 2; }
+    import_stubs+=("$root/$stub")
+done
+convert_stub_args=()
+for stub in "${import_stubs[@]}"; do
+    convert_stub_args+=(--stub "$stub")
+done
+ninja_inputs=("$native/ps5-pie.ld" "$native/app-symbols.map" "$sdk_root/bin/prospero-lld" "${import_stubs[@]}")
+for input in "${link_inputs[@]}" "$sdk_root"/target/lib/*.so; do
+    [[ $input == -* ]] || ninja_inputs+=("$input")
+done
 ninja_edge LINK "$build/llvm-pie.elf" "$sdk_root/bin/prospero-lld" -T "$native/ps5-pie.ld" --eh-frame-hdr \
     -L "$sdk_root/target/lib" \
     "${wrap_options[@]}" --version-script "$native/app-symbols.map" \
     -e _start -o "$build/llvm-pie.elf" "${link_inputs[@]}" \
-    --as-needed "$sdk_root"/target/lib/*.so
-ninja_inputs=("$build/llvm-pie.elf" "$tool" "$sdk_root"/target/lib/*.so)
+    --as-needed "$sdk_root"/target/lib/*.so "${import_stubs[@]}"
+ninja_inputs=("$build/llvm-pie.elf" "$tool" "$sdk_root"/target/lib/*.so "${import_stubs[@]}")
 ninja_edge CONVERT "$build/eboot.elf" "$tool" link --in "$build/llvm-pie.elf" --out "$build/eboot.elf" \
-    --stub-dir "$sdk_root/target/lib" --module-sdk "$module_sdk" \
+    --stub-dir "$sdk_root/target/lib" "${convert_stub_args[@]}" --module-sdk "$module_sdk" \
     --companion-sdk "$companion_sdk" --file-name eboot.elf
 ninja_run
 

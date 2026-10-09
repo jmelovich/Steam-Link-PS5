@@ -14,7 +14,13 @@ APP_STATIC_ARCHIVES ?= build/deps/libihslib.a build/deps/libprotobuf-c.a build/d
 	build/deps/libmbedtls.a build/deps/libmbedx509.a build/deps/libmbedcrypto.a \
 	build/deps/libcxx.a build/deps/libcxxabi.a build/deps/libunwind.a
 APP_RUNTIME_MODULES ?=
-APP_WRAP_SYMBOLS ?=
+# Import stubs for public system modules the bundled SDK lacks (VideoDec2), built
+# by tools/build-deps.sh. Space-separated paths relative to the repo root.
+APP_IMPORT_STUBS ?= build/deps/stubs/libSceVideodec2.so
+# The C allocation functions are served from our own heap (platform/ps5/ps5_malloc.c);
+# the default libc heap is too small for a video stream. strdup/strndup return
+# malloc'd memory our code frees, so they must come from the same heap.
+APP_WRAP_SYMBOLS ?= malloc free calloc realloc aligned_alloc memalign posix_memalign strdup strndup
 APP_SOURCE_DIR ?=
 APP_PARAM ?=
 APP_SCE_SYS ?=
@@ -48,7 +54,7 @@ BUILD_JOBS ?= $(shell nproc 2>/dev/null || echo 2)
 USE_CCACHE ?= $(if $(shell command -v ccache 2>/dev/null),1,0)
 export BUILD_JOBS USE_CCACHE
 export HOST_CC HOST_CXX HOST_TEST_CFLAGS HOST_TEST_CXXFLAGS HOST_TEST_LDFLAGS
-export APP_DEFINITIONS APP_INCLUDE_PATHS APP_STATIC_ARCHIVES APP_RUNTIME_MODULES APP_WRAP_SYMBOLS
+export APP_DEFINITIONS APP_INCLUDE_PATHS APP_STATIC_ARCHIVES APP_RUNTIME_MODULES APP_WRAP_SYMBOLS APP_IMPORT_STUBS
 export APP_SOURCE_DIR APP_PARAM APP_SCE_SYS APP_ASSETS APP_ROOT_FILES
 export APP_LAPY_HELPER
 export PACBREW_PACKAGES PACBREW_INCLUDE_PATHS PACBREW_STATIC_ARCHIVES
