@@ -343,6 +343,11 @@ int device_write(IHS_HIDDevice *device, const std::uint8_t *data, std::size_t le
     if (self->slot < 0 || self->slot >= MAX_PADS || g_slots[self->slot].handle < 0)
         return -1;
     const std::int32_t handle = g_slots[self->slot].handle;
+    // Steam's streaming host sends controller output as this fixed command set (opcodes
+    // 0x01..0x0b, verified against steamclient.so); it does NOT send the native DualSense
+    // 0x02 output report to a streamed pad, even a PS5-typed one, so there is no native
+    // path to parse here. Rumble (0x01) and the LED (0x05) are logged so their arrival and
+    // the ScePad result are visible.
     switch (data[0])
     {
     case 0x01: // rumble: u16 low, u16 high, u32 duration ms
@@ -353,15 +358,19 @@ int device_write(IHS_HIDDevice *device, const std::uint8_t *data, std::size_t le
         std::memcpy(&low, data + 1, 2);
         std::memcpy(&high, data + 3, 2);
         const std::uint8_t motors[2] = {static_cast<std::uint8_t>(low >> 8), static_cast<std::uint8_t>(high >> 8)};
-        scePadSetVibration(handle, motors);
+        const std::int32_t rc = scePadSetVibration(handle, motors);
+        slp::log("hid: pad %d rumble large=%u small=%u (scePadSetVibration 0x%x)", self->slot, motors[0], motors[1],
+                 static_cast<unsigned>(rc));
         return 0;
     }
-    case 0x05: // LED r,g,b
+    case 0x05: // canonical LED r,g,b
     {
         if (length < 4)
             return -1;
         const std::uint8_t color[4] = {data[1], data[2], data[3], 0};
-        scePadSetLightBar(handle, color);
+        const std::int32_t rc = scePadSetLightBar(handle, color);
+        slp::log("hid: pad %d led r=%u g=%u b=%u (scePadSetLightBar 0x%x)", self->slot, data[1], data[2], data[3],
+                 static_cast<unsigned>(rc));
         return 0;
     }
     case 0x06: // trigger rumble: the DualSense has no trigger motors in this model
@@ -381,7 +390,7 @@ int device_write(IHS_HIDDevice *device, const std::uint8_t *data, std::size_t le
     case 0x0b: // player index
         return 0;
     default:
-        return -1;
+        return 0; // accept unknown output reports rather than erroring
     }
 }
 
