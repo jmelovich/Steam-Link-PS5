@@ -1,0 +1,69 @@
+From: steamlink-ps5
+Subject: negotiation: advertise the client display's real refresh rate
+
+The negotiation hard-coded 59.94 Hz in both places the host consults - the
+available video mode's refresh rate and the client's maximum framerate - so a
+user who set 120 Hz in Steam's Remote Play settings on a 120 Hz display was
+silently vetoed: the host streams at the lower of the client's advertised
+maximum and its own setting. Worse, the mismatch between what the host sent
+and what the client had negotiated showed up as doubled latency and artifacts.
+
+Add refreshRateNum/Den to IHS_SessionConfig. The application fills it with
+the console display's actual refresh rate; the negotiation advertises it as
+both the available mode's refresh and the maximum framerate. 0/0 keeps the
+59.94 default. This is the native-Steam-Link model: the client reports what it
+can do, and the host's Remote Play settings decide the stream.
+
+--- a/include/ihslib/session.h
++++ b/include/ihslib/session.h
+@@ -58,6 +58,15 @@
+      */
+     int32_t maxResolutionX;
+     int32_t maxResolutionY;
++    /**
++     * The client display's refresh rate as a fraction (e.g. 120/1, 5994/100), advertised
++     * to the host as both the available video mode's refresh rate and the client's maximum
++     * framerate. 0/0 keeps the 59.94 default. The host streams at the lower of this and
++     * its own Remote Play framerate setting, so advertise the real display rate and let
++     * the host's settings decide, as the native Steam Link clients do.
++     */
++    int32_t refreshRateNum;
++    int32_t refreshRateDen;
+ } IHS_SessionConfig;
+ 
+ typedef struct IHS_StreamSessionCallbacks {
+--- a/src/session/channels/ch_control_negotiation.c
++++ b/src/session/channels/ch_control_negotiation.c
+@@ -126,8 +126,15 @@
+     CStreamVideoMode availableVideoMode = CSTREAM_VIDEO_MODE__INIT;
+     availableVideoMode.width = ihsConf.maxResolutionX > 0 ? ihsConf.maxResolutionX : 1920;
+     availableVideoMode.height = ihsConf.maxResolutionY > 0 ? ihsConf.maxResolutionY : 1080;
+-    PROTOBUF_C_SET_VALUE(availableVideoMode, refresh_rate_numerator, 5994);
+-    PROTOBUF_C_SET_VALUE(availableVideoMode, refresh_rate_denominator, 100);
++    // Advertise the client display's real refresh rate (a 120 Hz panel, say), not a fixed
++    // 59.94: the host streams at the lower of this and its own Remote Play setting, so a
++    // hard-coded 60 silently vetoed the user's 120 Hz choice.
++    {
++        int32_t rrNum = ihsConf.refreshRateNum > 0 && ihsConf.refreshRateDen > 0 ? ihsConf.refreshRateNum : 5994;
++        int32_t rrDen = ihsConf.refreshRateNum > 0 && ihsConf.refreshRateDen > 0 ? ihsConf.refreshRateDen : 100;
++        PROTOBUF_C_SET_VALUE(availableVideoMode, refresh_rate_numerator, rrNum);
++        PROTOBUF_C_SET_VALUE(availableVideoMode, refresh_rate_denominator, rrDen);
++    }
+ 
+     CStreamVideoMode *availableVideoModes[] = {&availableVideoMode};
+     config.n_available_video_modes = 1;
+@@ -156,8 +163,12 @@
+         PROTOBUF_C_SET_VALUE(clientConfig, enable_microphone_streaming, true);
+     }
+     PROTOBUF_C_SET_VALUE(clientConfig, enable_video_streaming, true);
+-    PROTOBUF_C_SET_VALUE(clientConfig, maximum_framerate_numerator, 5994);
+-    PROTOBUF_C_SET_VALUE(clientConfig, maximum_framerate_denominator, 100);
++    {
++        int32_t frNum = ihsConf.refreshRateNum > 0 && ihsConf.refreshRateDen > 0 ? ihsConf.refreshRateNum : 5994;
++        int32_t frDen = ihsConf.refreshRateNum > 0 && ihsConf.refreshRateDen > 0 ? ihsConf.refreshRateDen : 100;
++        PROTOBUF_C_SET_VALUE(clientConfig, maximum_framerate_numerator, frNum);
++        PROTOBUF_C_SET_VALUE(clientConfig, maximum_framerate_denominator, frDen);
++    }
+     {
+         int32_t maxBitrate = ihsConf.maxBitrateKbps > 0 ? ihsConf.maxBitrateKbps : 30000;
+         EStreamQualityPreference quality = ihsConf.quality == 1 ? k_EStreamQualityFast

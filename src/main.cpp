@@ -446,8 +446,28 @@ void draw_pairing(ps5::demo::Canvas &canvas) noexcept
     canvas.text(120, 1020, upper(slp::log_last_line()), 2, Color::magenta);
 }
 
+// The presentation loop calls draw_scene exactly once per vblank, so counting calls per
+// second measures the display's REAL refresh rate (a PS5 title runs at 60 Hz until it
+// requests 120 Hz output). It is advertised to the host at negotiation, so the host streams
+// at the rate we can actually show - the native-Steam-Link model: report capability, let
+// the host's Remote Play settings decide.
+std::atomic<std::uint32_t> g_display_hz{0};
+
 void draw_scene(ps5::demo::Canvas &canvas) noexcept
 {
+    {
+        static std::uint64_t v_t0 = 0, v_n = 0;
+        const std::uint64_t t = now_ms();
+        if (v_t0 == 0)
+            v_t0 = t;
+        ++v_n;
+        if (t - v_t0 >= 1000)
+        {
+            g_display_hz = static_cast<std::uint32_t>(v_n * 1000 / (t - v_t0));
+            v_t0 = t;
+            v_n = 0;
+        }
+    }
     Mode mode;
     {
         std::lock_guard lock{status.mutex};
@@ -730,6 +750,27 @@ IHS_StreamVideoSubmitResult on_video_submit(IHS_Session *session, IHS_Buffer *da
     g_submit_finished_ms = now_ms();
     if (took > 40)
         g_submit_slow.fetch_add(1);
+    // (diag) decode+convert cost per frame: at 120 fps the whole budget is 8.3 ms, so the
+    // old ">40 ms = slow" counter says nothing about 120 Hz headroom. Report avg/max/s.
+    {
+        static std::uint64_t c_t0 = 0, c_sum = 0, c_max = 0, c_n = 0, c_over8 = 0;
+        if (c_t0 == 0)
+            c_t0 = started;
+        c_sum += took;
+        ++c_n;
+        if (took > c_max)
+            c_max = took;
+        if (took > 8)
+            ++c_over8;
+        if (started - c_t0 >= 1000)
+        {
+            slp::log("decode: avg=%.1fms max=%llums over8ms=%llu/%llu", c_n ? static_cast<double>(c_sum) / c_n : 0.0,
+                     static_cast<unsigned long long>(c_max), static_cast<unsigned long long>(c_over8),
+                     static_cast<unsigned long long>(c_n));
+            c_t0 = started;
+            c_sum = c_max = c_n = c_over8 = 0;
+        }
+    }
     if (ok)
         return IHS_StreamVideoSubmitOK;
     // A failed decode means we wait for a keyframe. Reporting it makes ihslib reset
@@ -790,9 +831,31 @@ void on_session_configuring(IHS_Session *, IHS_SessionConfig *config, void *)
     config->quality = static_cast<std::int32_t>(settings.quality);
     config->maxResolutionY = static_cast<std::int32_t>(settings.max_height);
     config->maxResolutionX = settings.max_height <= 720 ? 1280 : 1920;
-    slp::log("session config: %dx%d, bitrate cap %d kbit/s (%s), quality %u, hevc %d", config->maxResolutionX,
-             config->maxResolutionY, config->maxBitrateKbps, settings.bitrate_kbps ? "explicit" : "AUTO",
-             settings.quality, settings.hevc);
+    // Advertise the display's real refresh rate (measured from the vblank cadence) so the
+    // host streams at the lower of this and its own Remote Play framerate setting. The old
+    // hard-coded 59.94 silently vetoed a user's 120 Hz choice and, worse, left the host and
+    // client disagreeing about the frame rate. 0/0 = not measured yet -> library default.
+    const std::uint32_t hz = g_display_hz.load();
+    if (hz >= 100)
+    {
+        config->refreshRateNum = 11988;
+        config->refreshRateDen = 100;
+    }
+    else if (hz > 0)
+    {
+        config->refreshRateNum = 5994;
+        config->refreshRateDen = 100;
+    }
+    else
+    {
+        config->refreshRateNum = 0;
+        config->refreshRateDen = 0;
+    }
+    slp::log("session config: %dx%d, bitrate cap %d kbit/s (%s), quality %u, hevc %d, refresh %u Hz measured -> "
+             "advertise %d/%d",
+             config->maxResolutionX, config->maxResolutionY, config->maxBitrateKbps,
+             settings.bitrate_kbps ? "explicit" : "AUTO", settings.quality, settings.hevc, hz,
+             config->refreshRateNum, config->refreshRateDen);
 }
 
 void on_session_connected(IHS_Session *session, void *)
