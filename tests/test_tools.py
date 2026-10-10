@@ -266,11 +266,42 @@ class ToolTests(unittest.TestCase):
                 )
                 self.assertNotEqual(result.returncode, 0, f"{bad!r} should be refused")
 
-    def test_release_workflow_stamps_the_version_and_drafts_the_release(self):
+            # --check must agree with a matching value, reject a mismatch, and
+            # never write: CI relies on it to refuse a release that would be
+            # listed but never offered to a console as an update.
+            shutil.copy2(ROOT / "sce_sys/param.json", param)
+            subprocess.run(
+                ["bash", script, "v4.5.6"],
+                env={**os.environ, "PARAM_JSON": str(param)},
+                check=True,
+                capture_output=True,
+            )
+            before = param.read_text(encoding="utf-8")
+            ok = subprocess.run(
+                ["bash", script, "--check", "v4.5.6"],
+                env={**os.environ, "PARAM_JSON": str(param)},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+            bad = subprocess.run(
+                ["bash", script, "--check", "v4.5.7"],
+                env={**os.environ, "PARAM_JSON": str(param)},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(bad.returncode, 0)
+            self.assertIn("mismatch", bad.stderr)
+            self.assertEqual(param.read_text(encoding="utf-8"), before, "--check wrote")
+
+    def test_release_workflow_verifies_the_version_and_drafts_the_release(self):
         workflow = (ROOT / ".github/workflows/build.yml").read_text(encoding="utf-8")
-        # A tag build must stamp contentVersion, or every release looks like the
-        # same version to a store even though the tag moved.
-        self.assertIn("tools/set-content-version.sh", workflow)
+        # A tag build must CHECK the committed contentVersion, not overwrite it:
+        # ps5-homebrew-catalog reads it from the repository at the tag, so
+        # stamping it at build time would leave the committed value behind.
+        self.assertIn("tools/set-content-version.sh --check", workflow)
         self.assertIn("--draft", workflow)
         # Pinned, not floating: this toolchain needs the Clang 18 image, which
         # only ubuntu-24.04 carries. Ignore comments, which explain the pin.

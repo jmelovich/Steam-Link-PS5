@@ -164,24 +164,30 @@ PS5_HOST=192.168.x.x tools/relaunch.sh
 The console writes `/data/steamlink-ps5/log.txt`, readable over FTP, and mirrors it to the
 kernel log.
 
-### Releases
+### Cutting a release
 
-`.github/workflows/build.yml` runs the same build on every push, and **pushing a `v*` tag is
-what makes a release**:
+`.github/workflows/build.yml` builds on every push, but **a release is made by pushing a `v*`
+tag** — nothing else triggers one. Use the helper, which does the steps in the order that
+matters:
 
 ```bash
-git tag -a v1.0.0 -m "First public build"
-git push origin v1.0.0
+tools/release.sh 1.1.0     # bumps contentVersion, commits, tags v1.1.0
+git push origin main
+git push origin v1.1.0
 ```
 
-That builds the ZIP and opens a **draft** release with it attached, which you then review and
-publish from the Releases page. Nothing else triggers a release — ordinary commits only build.
+CI then builds and opens a **draft** release with the ZIP attached. **Publish it** from the
+Releases page — a draft cannot be downloaded, so stores and users can't see it.
 
-The tag is the single source of truth for the version: a tag build stamps
-`sce_sys/param.json`'s `contentVersion` from it via `tools/set-content-version.sh`, mapping
-`vMAJOR.MINOR.PATCH` to the PS5's `NN.NNN.NNN` form (`v1.2.3` → `01.002.003`). The file in the
-repository keeps a fixed baseline; only the built artifact is stamped. This matters because
-stores and updaters decide "is there a new version?" from `contentVersion`, not from the tag.
+Why the order matters: a PS5 decides an installed copy is out of date by comparing
+`sce_sys/param.json`'s `contentVersion`, and [ps5-homebrew-catalog][catalog] reads that value
+from the **committed** `param.json` at the release tag. If the bump isn't in the commit the tag
+points at, the listing shows a new release that no console ever offers as an update.
+`tools/release.sh` bumps and commits it before tagging; CI re-checks that the committed value
+matches the tag with `tools/set-content-version.sh --check` and fails the release if it
+doesn't. The mapping is `vMAJOR.MINOR.PATCH` → `NN.NNN.NNN` (`v1.2.3` → `01.002.003`).
+
+[catalog]: https://github.com/blackbearreloaded/ps5-homebrew-catalog
 
 ## How it works
 
