@@ -1,0 +1,66 @@
+From: steamlink-ps5
+Subject: TEMP diagnostics - log data channel window state and add-branch counts
+
+diff -ru a/src/session/channels/ch_data.c b/src/session/channels/ch_data.c
+--- a/src/session/channels/ch_data.c	2026-10-09 17:06:31.727083938 -0700
++++ b/src/session/channels/ch_data.c	2026-10-09 17:06:31.740381074 -0700
+@@ -132,8 +132,21 @@
+         return;
+     }
+     IHS_SessionLog(channel->base.session, IHS_LogLevelInfo, "Data", "%s channel started", channelName);
++    extern unsigned long g_slp_add_accept, g_slp_add_old, g_slp_add_far, g_slp_add_overflow, g_slp_add_dup;
++    void IHS_SlpWindowDebug(const IHS_SessionPacketsWindow *, int *, int *, int *, unsigned *);
++    uint64_t slpLastLog = 0;
+     while (!channel->interrupted) {
+         IHS_MutexLock(channel->windowLock);
++        uint64_t slpNow = IHS_TimerNow();
++        if (slpNow - slpLastLog >= 1000) {
++            slpLastLog = slpNow;
++            int sz, hp, tp; unsigned tid;
++            IHS_SlpWindowDebug(channel->window, &sz, &hp, &tp, &tid);
++            IHS_SessionLog(channel->base.session, IHS_LogLevelInfo, "WIN",
++                           "%s size=%d head=%d tail=%d tailid=%u add[ok=%lu old=%lu far=%lu ovf=%lu dup=%lu]",
++                           channelName, sz, hp, tp, tid, g_slp_add_accept, g_slp_add_old, g_slp_add_far,
++                           g_slp_add_overflow, g_slp_add_dup);
++        }
+         uint16_t discarded = IHS_SessionPacketsWindowDiscard(channel->window, DISCARD_DIFF);
+         if (discarded > 0) {
+             IHS_SessionLog(channel->base.session, IHS_LogLevelDebug, channelName, "Discarded %u packets", discarded);
+diff -ru a/src/session/window.c b/src/session/window.c
+--- a/src/session/window.c	2026-10-09 17:06:31.727198132 -0700
++++ b/src/session/window.c	2026-10-09 17:06:31.740315966 -0700
+@@ -88,6 +88,15 @@
+     window->tail.pos = -1;
+ }
+ 
++unsigned long g_slp_add_accept = 0, g_slp_add_old = 0, g_slp_add_far = 0, g_slp_add_overflow = 0, g_slp_add_dup = 0;
++
++void IHS_SlpWindowDebug(const IHS_SessionPacketsWindow *window, int *size, int *headpos, int *tailpos, unsigned *tailid) {
++    *size = IHS_SessionPacketsWindowSize(window);
++    *headpos = window->head.pos;
++    *tailpos = window->tail.pos;
++    *tailid = window->tail.id;
++}
++
+ bool IHS_SessionPacketsWindowAdd(IHS_SessionPacketsWindow *window, IHS_SessionPacket *packet) {
+     /* Calculate distance of 2 items */
+     int tailOffset = window->tail.pos < 0 ? 1 : (int16_t) (packet->header.packetId - window->tail.id);
+@@ -107,6 +116,7 @@
+      * asks the host for a keyframe.
+      */
+     if (tailOffset > window->capacity) {
++        g_slp_add_far++;
+         return false;
+     }
+     /* Large offset means overflow, abort processing and hangup. Keep one slot free: a ring with
+@@ -118,8 +128,10 @@
+     IHS_SessionWindowItem *tailPkt = &window->data[writePos];
+     /* Ignore if the slot is used */
+     if (FrameItemIsUsed(tailPkt)) {
++        g_slp_add_dup++;
+         return true;
+     }
++    g_slp_add_accept++;
+     FrameItemUsePacket(tailPkt, packet);
+ 
+     /* Only do incremental update */
