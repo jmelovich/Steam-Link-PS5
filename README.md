@@ -1,8 +1,10 @@
 # Steam Remote Play for PS5
 
-Stream your PC's Steam library to a jailbroken PS5. The console finds your PC, pairs with a
-PIN, and streams Big Picture Mode with hardware video decoding and the DualSense — the TV
-Steam Link experience, running natively on the PS5.
+A native PS5 app for jailbroken consoles that acts as a Steam Remote Play client, allowing you
+to stream your PC's Steam library to your PS5. The console finds PCs running Steam on your
+local network, pairs with a PIN, and streams Big Picture Mode with hardware video decoding &
+most DualSense features. Your PC requires no additional software beyond a basic Steam
+installation.
 
 Unofficial and not affiliated with Valve or Sony.
 
@@ -23,15 +25,32 @@ Tested on a PS5 **CFI-2015, firmware 13.20**, with etaHEN and ShadowMount+ 1.7be
 | **In-stream** | Options + touchpad click opens the Steam menu. Hold both 1.5 s to quit the stream. |
 | **Smoothness** | A configurable frame buffer absorbs network jitter. |
 
-Implemented but **not verified** — they are wired up and should work, but nothing has
-confirmed them on hardware: rumble, lightbar, gyro/accelerometer, HEVC, 5.1 audio, more than
-one controller, and 120 Hz output (never run on a 120 Hz display; on a 60 Hz panel the console
-declines and the app stays at 60, which is the intended fallback).
+Implemented but **not verified** — wired up and expected to work, but nothing has confirmed
+them on hardware:
 
-Not implemented: keyboard, mouse, microphone, HDR.
+- **Rumble and lightbar** — the commands reach the pad, but Steam's own *Identify controller*
+  test doesn't route to a streamed pad, so confirming this needs a game that uses rumble.
+- **Gyro and accelerometer** — sent in every input frame.
+- **HEVC** and **5.1 audio** — selectable, never exercised.
+- **More than one controller** — up to four pads are enumerated and forwarded, but **every
+  test so far has used a single connected controller.** Nothing with two or more pads has
+  been tried, so local multiplayer is entirely unverified.
+- **120 Hz output** — never run on a 120 Hz display. On a 60 Hz panel the console declines the
+  mode and the app stays at 60, which is the intended fallback.
 
-Not possible: using the touchpad as a trackpad. Remote Play gives the host no touchpad for a
-streamed controller. The touchpad *click* works as a normal bindable button.
+**Not implemented:**
+
+- **PS5 microphone passthrough** — *completely untested, because it was never built.* The
+  console's microphone is never captured or sent, so voice chat through the PS5 does not
+  work. ihslib provides the protocol side and the Opus encoder is already linked; what is
+  missing is console-side capture (`sceAudioIn`) and registering the microphone callbacks.
+  Since the capability is never advertised during negotiation, the host never asks for it —
+  so nothing misbehaves, the feature simply isn't there.
+- **Keyboard and mouse** — no USB HID forwarding.
+- **HDR**.
+
+**Not possible:** using the touchpad as a trackpad. Remote Play gives the host no touchpad for
+a streamed controller. The touchpad *click* works as a normal bindable button.
 
 ## What you need
 
@@ -40,7 +59,11 @@ streamed controller. The touchpad *click* works as a normal bindable button.
 - a payload loader such as etaHEN
 - **ShadowMount+ 1.7beta4 or newer** — required; it puts `/data` inside the app's sandbox and
   registers homebrew on the home screen
-- `ftpsrv` on port 2121 — to copy the app across
+- **some way to write files into `/data/homebrew/` on the console.** Any method works — the
+  app doesn't care how it got there. `ftpsrv` on port 2121 is the usual choice (etaHEN
+  bundles one), but a file-manager payload or a browser-based uploader such as PS5 Upload is
+  equally fine. Only the `make deploy` and `tools/relaunch.sh` developer helpers assume FTP
+  specifically.
 
 **On the PC** — Steam with Remote Play enabled, on the same network.
 
@@ -57,8 +80,9 @@ Download the latest `PPSA99350.zip` from [Releases](../../releases) and unpack i
 └── assets/
 ```
 
-Any FTP client works (`ftpsrv`, port 2121). ShadowMount+ notices the new title within about
-15 seconds and it appears on the home screen. There is no firmware requirement baked into the
+Copy it across however you like — an FTP client against `ftpsrv` on port 2121, a file-manager
+payload, or an uploader like PS5 Upload. ShadowMount+ notices the new title within about 15
+seconds and it appears on the home screen. There is no firmware requirement baked into the
 app, so the same build works on any firmware your jailbreak supports.
 
 Building it yourself instead? See [Building](#building).
