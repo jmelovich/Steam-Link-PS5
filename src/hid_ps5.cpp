@@ -100,7 +100,16 @@ enum : unsigned
 
 constexpr std::uint16_t VENDOR_SONY = 0x054c;
 constexpr std::uint16_t PRODUCT_DUALSENSE = 0x0ce6;
+constexpr std::uint16_t DUALSENSE_VERSION = 0x0100;
 constexpr int MAX_PADS = 4;
+
+// A stable, locally-administered serial per slot (02:53:4C:50:53:0N = "S","L","P","S"
+// + slot). Steam keys per-controller config on the serial, so giving each pad a
+// distinct one keeps their bindings apart; never a real DualSense's serial.
+void ds_serial(char out[13], int slot)
+{
+    std::snprintf(out, 13, "02534C50530%X", slot & 0x0f);
+}
 
 // One signed-in user's pad.
 struct Slot
@@ -404,8 +413,9 @@ int device_get_feature_report(IHS_HIDDevice *device, const std::uint8_t *report_
     {
     case 0x07: // serial
     {
+        char serial[13];
+        ds_serial(serial, self->slot);
         IHS_BufferWriteMem(dest, 0, report_number, 1);
-        const char serial[] = "";
         IHS_BufferWriteMem(dest, 1, reinterpret_cast<const std::uint8_t *>(serial), sizeof serial);
         return 0;
     }
@@ -462,7 +472,10 @@ int device_product_string(IHS_HIDDevice *device, IHS_Buffer *out)
 }
 int device_serial_string(IHS_HIDDevice *device, IHS_Buffer *out)
 {
-    return device_string(device, out, "");
+    auto *self = reinterpret_cast<Device *>(device);
+    char serial[13];
+    ds_serial(serial, self->slot);
+    return device_string(device, out, serial);
 }
 
 int device_start_input_reports(IHS_HIDDevice *device, std::size_t length)
@@ -670,18 +683,23 @@ void provider_device_info(IHS_HIDProvider *, IHS_Enumeration *enumeration, IHS_H
     const int *item = static_cast<const int *>(enumeration->cls->get(enumeration));
     std::lock_guard lock{g_mutex};
     const Slot &slot = g_slots[item ? *item : 0];
+    const int index = item ? *item : 0;
+    static char serials[MAX_PADS][16];
+    ds_serial(serials[index & 3], index & 3);
     info->path = slot.path;
     info->product_string = "DualSense Wireless Controller";
-    info->serial_number = "";
-    // Generic gamepad for now (works as an Xbox 360 pad via Steam Input). Advertising
-    // the DualSense VID/PID makes Steam try its native DualSense driver, which needs the
-    // controller's feature reports and native report format we do not yet emulate, so it
-    // "couldn't get controller details" and created no pad. Native DualSense is in progress.
-    info->vendor_id = 0;
-    info->product_id = 0;
-    info->product_version = 0;
-    (void)VENDOR_SONY;
-    (void)PRODUCT_DUALSENSE;
+    info->serial_number = serials[index & 3];
+    // Advertise the DualSense VID/PID so Steam registers the streamed controller as a PS5
+    // DualSense (verified on the host: PS5ControllerInput=1, GameControllerVID=0x054C,
+    // PID=0x0CE6) and shows PlayStation glyphs in Big Picture and game bindings. The input
+    // itself still travels as Steam's canonical gamepad report (the host's remote-HID bridge
+    // decodes that and never invokes SDL's native DualSense driver - it does no 64-byte
+    // hid_read and never reads the 0x09/0x20 feature reports - so the report format below is
+    // unchanged and input keeps working). is_generic_gamepad must stay true in ihslib:
+    // setting it false made the host skip opening the device entirely.
+    info->vendor_id = VENDOR_SONY;
+    info->product_id = PRODUCT_DUALSENSE;
+    info->product_version = DUALSENSE_VERSION;
 }
 
 const IHS_HIDProviderClass provider_class = {
