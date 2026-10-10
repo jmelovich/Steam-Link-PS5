@@ -1,0 +1,78 @@
+From: steamlink-ps5
+Subject: data channel: skip a lost packet while waiting; never let the window fill completely
+
+A single lost packet while the worker is idle (the normal state when the
+decoder keeps up: window size 0-2) wedged the data channel for 10-20 s. The
+worker calls IHS_SessionPacketsWindowDiscard only at the top of its outer
+loop, then sits in an inner `while (!Poll) CondWait` loop; Poll fails on the
+gap at the head and Discard, the only thing that can step the head over a gap,
+never runs again. Packets pile up behind the gap until the ring holds
+capacity-1 of them, at which point IHS_SessionPacketsWindowSize() reads 0
+(tail.pos + 1 == head.pos means both "empty" and "every slot occupied"), the
+next packet is written into the gap slot and delivered out of order (the
+"Unexpected video frame sequence N (expect M)" with N-M ~ 2048), every later
+packet maps onto an occupied slot and is dropped as a "dup" with the tail
+frozen, and only ~3x capacity packets later does the far-ahead check reset the
+window ("items overflow (available 2048)": full, not drained). When that reset
+re-adds a mid-frame fragment as the new head the window wedges again for
+another 2048 packets. At 300-550 video packets/s a lost packet costs 10-20 s
+of frozen video while audio (its own window, 10x fewer packets) plays on. The
+official client drops the incomplete frame and asks for a keyframe at once.
+
+Run Discard before every Poll (the loop returns to its top after each wake),
+so a gap at the head is skipped as soon as a newer frame head exists; an
+incomplete frame still gets DISCARD_DIFF (200 ms) for late fragments. Reject
+an add that would occupy the last free slot so Size() is never ambiguous (a
+real backlog now trips the overflow reset at capacity-1 with a truthful
+"available 1"). Treat a packet exactly Size() behind the tail as already
+processed: it maps to the slot just before the head, where it was orphaned and
+later made a new packet look like a duplicate.
+
+diff -ru a/src/session/channels/ch_data.c b/src/session/channels/ch_data.c
+--- a/src/session/channels/ch_data.c
++++ b/src/session/channels/ch_data.c
+@@ -134,12 +134,12 @@
+         if (discarded > 0) {
+             IHS_SessionLog(channel->base.session, IHS_LogLevelDebug, channelName, "Discarded %u packets", discarded);
+         }
+-        bool hasFrame;
+-        while (!(hasFrame = IHS_SessionPacketsWindowPoll(channel->window, &frame))) {
++        /* No frame yet: wait for the next packet, then go round again so Discard runs before
++         * the next Poll. Discard is what steps the head over a packet that never arrives;
++         * polling alone waits on such a gap forever. */
++        bool hasFrame = IHS_SessionPacketsWindowPoll(channel->window, &frame);
++        if (!hasFrame) {
+             IHS_CondWait(channel->windowCond, channel->windowLock);
+-            if (channel->interrupted) {
+-                break;
+-            }
+         }
+         IHS_MutexUnlock(channel->windowLock);
+         if (hasFrame) {
+diff -ru a/src/session/window.c b/src/session/window.c
+--- a/src/session/window.c
++++ b/src/session/window.c
+@@ -91,8 +91,9 @@
+ bool IHS_SessionPacketsWindowAdd(IHS_SessionPacketsWindow *window, IHS_SessionPacket *packet) {
+     /* Calculate distance of 2 items */
+     int tailOffset = window->tail.pos < 0 ? 1 : (int16_t) (packet->header.packetId - window->tail.id);
+-    /* We already processed this packet, so ignore it */
+-    if (tailOffset < 0 && -tailOffset > IHS_SessionPacketsWindowSize(window)) {
++    /* We already processed this packet, so ignore it. The window holds Size() packets ending
++     * at the tail, so an offset of exactly -Size() is the slot just before the head. */
++    if (tailOffset < 0 && -tailOffset >= IHS_SessionPacketsWindowSize(window)) {
+         return true;
+     }
+     /*
+@@ -108,8 +109,9 @@
+     if (tailOffset > window->capacity) {
+         return false;
+     }
+-    /* Large offset means overflow, abort processing and hangup */
+-    if (tailOffset > (int) IHS_SessionPacketsWindowAvailable(window)) {
++    /* Large offset means overflow, abort processing and hangup. Keep one slot free: a ring with
++     * every slot occupied has tail.pos + 1 == head.pos, which Size() reads as empty. */
++    if (tailOffset >= (int) IHS_SessionPacketsWindowAvailable(window)) {
+         return false;
+     }
+     const int writePos = (window->tail.pos + tailOffset + window->capacity) % window->capacity;

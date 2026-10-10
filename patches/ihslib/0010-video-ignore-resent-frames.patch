@@ -1,0 +1,39 @@
+From: steamlink-ps5
+Subject: video: only request a keyframe on a forward sequence gap, drop resent frames
+
+The host re-sends old video frames (observed on a wired-PC link: ~43% of
+received packets were duplicates and frame sequences arrived thousands out of
+order, jumping forwards then backwards). The sequence check treated every
+mismatch -- including these old resent frames -- as a lost frame and requested
+a keyframe, and each keyframe request made the host re-send still more old
+frames, so the client thrashed and sat in "wait for keyframe" for ~20s at a
+time while audio kept playing. Compare the 16-bit sequence as signed: a
+backward difference is a resent duplicate, dropped silently without disturbing
+our tracking or asking for anything; only a forward gap (real loss) requests a
+keyframe. This breaks the re-send storm that caused the stalls.
+
+diff -ru a/src/session/channels/video/ch_data_video.c b/src/session/channels/video/ch_data_video.c
+--- a/src/session/channels/video/ch_data_video.c	2026-10-09 16:21:47.121356181 -0700
++++ b/src/session/channels/video/ch_data_video.c	2026-10-09 16:21:47.139340322 -0700
+@@ -236,8 +236,19 @@
+             IHS_SessionChannelDataLost(channel);
+             videoCh->states.waitingKeyFrame = IHS_TimerNow();
+         }
+-    } else if (vhead.sequence != videoCh->states.expectedSequence) {
+-        if (videoCh->states.waitingKeyFrame == 0) {
++    } else {
++        /* Only a FORWARD jump means frames were actually lost. A backward sequence is
++         * an old frame the host re-sent (a duplicate); the original code treated it as
++         * loss and asked for a keyframe, and each request made the host re-send more old
++         * frames, so the sequence thrashed forwards and backwards and the client sat in
++         * "wait for keyframe" for many seconds -> the long stalls. Drop resent/old frames
++         * silently without touching our sequence tracking, and only request a keyframe on
++         * a real forward gap. Sequence is a 16-bit wrapping counter, so compare signed. */
++        int16_t seqDiff = (int16_t) (vhead.sequence - videoCh->states.expectedSequence);
++        if (seqDiff < 0) {
++            goto unlock;
++        }
++        if (seqDiff > 0 && videoCh->states.waitingKeyFrame == 0) {
+             IHS_SessionLog(channel->session, IHS_LogLevelWarn, "Video",
+                            "Unexpected video frame sequence %u (expect %u), request keyframe", vhead.sequence,
+                            videoCh->states.expectedSequence);

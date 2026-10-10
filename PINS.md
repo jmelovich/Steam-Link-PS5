@@ -35,19 +35,32 @@ commit the submodule change here together with a note below.
   off from 60 ms to 1 s instead of 21 sends in 200 ms. Also makes `IHS_QueuePollBy` detach
   the polled node so it can be re-queued without building a cycle.
 - `0007-window-resync-when-host-races-beyond-the-window.patch`: when the host's packet id
-  is more than a whole window ahead (a big loss burst), resync instead of silently ignoring
-  every later packet, which used to freeze the channel for good.
+  is more than a whole window ahead, resync instead of silently ignoring every later packet,
+  which used to freeze the channel for good. With 0014 in place this is a rare fallback (a
+  real >2048-packet loss burst or host id jump); the "window never fills" diagnosis in its
+  description was wrong - the ring was full, read as empty, see 0014.
 - `0008-hid-report-clamp-instead-of-abort.patch`: the HID report holder clamps a report to
   the length the host asked for instead of `abort()`ing the whole title, which crashed the
   app a few seconds into every stream once the host requested a shorter controller report.
 - `0009-session-config-max-resolution.patch`: `IHS_SessionConfig` gains `maxResolutionX/Y`
   so the app can ask the host to downscale (the negotiation hard-coded "unlimited"), which
   shrinks keyframes on a weak link.
-- `0010-video-request-retransmission-of-lost-packets.patch`: on a gap, ask the host to resend
-  the specific missing packets (`CStreamDataLostMsg.packets`, which upstream left empty) so a
-  frame can finish assembling instead of only begging for a keyframe. Rate-limited to 100 ms.
-- `0011-hold-partial-frames-longer-for-retransmission.patch`: hold partial frames ~1 s (was
-  150-200 ms) so a retransmitted fragment can land on a slow link before the frame is dropped.
+- `0010-video-ignore-resent-frames.patch`: only a forward video-sequence gap requests a
+  keyframe; an old (re-sent) frame is dropped silently instead of being treated as loss,
+  which used to turn one re-send into a keyframe-request storm.
+- `0014-data-channel-discard-while-waiting-and-window-full-guards.patch`: THE stall fix.
+  The data worker only ran `IHS_SessionPacketsWindowDiscard` (the one thing that steps the
+  head past a packet that never arrives) at the top of its loop, never while parked waiting
+  for the next packet, so a single lost packet wedged the window for ~3x its capacity
+  (10-20 s of frozen video per lost packet, audio unaffected). Poll once and wait, so Discard
+  runs before every Poll; and keep one window slot free (`>=` guards) so a full ring is never
+  misread as empty. Verified in a harness against the real window code and on the console:
+  no stalls, zero resets, duplicates flat.
+
+  (Removed after measurement: a patch that listed lost packet ids in `DataLost` - with the
+  window wedged that meant thousands of ids and the host re-sent them all, a 43%-duplicate
+  storm - and a patch that raised `DISCARD_DIFF` to 1 s, which changed nothing because
+  Discard was never reached while wedged.)
 - `0012-negotiation-enable-remote-hid.patch`: advertise `enable_remote_hid = 1` so the host
   injects the controller's input (it was 0, so the host opened the pad but ignored its input).
 - `0013-send-acks-redundantly-on-lossy-uplink.patch`: send each ACK three times so reliable
