@@ -673,14 +673,10 @@ void provider_device_info(IHS_HIDProvider *, IHS_Enumeration *enumeration, IHS_H
     info->path = slot.path;
     info->product_string = "DualSense Wireless Controller";
     info->serial_number = "";
-    // MEASURED on this host: advertising the DualSense VID/PID (even with
-    // is_generic_gamepad=true and caps hid=false) makes Steam switch to its native
-    // DualSense driver and request 73-byte raw reports, which our 48-byte canonical
-    // report cannot satisfy, so input is received, ACKed, and then ignored. With no
-    // VID/PID the host requests the 48-byte generic format we produce and input is
-    // applied. Steam Remote Play virtualizes every remote pad as an Xbox 360 pad via
-    // Steam Input anyway (no native DualSense passthrough), so working input on the
-    // generic path is the right call; the pad shows as a generic gamepad.
+    // Generic gamepad for now (works as an Xbox 360 pad via Steam Input). Advertising
+    // the DualSense VID/PID makes Steam try its native DualSense driver, which needs the
+    // controller's feature reports and native report format we do not yet emulate, so it
+    // "couldn't get controller details" and created no pad. Native DualSense is in progress.
     info->vendor_id = 0;
     info->product_id = 0;
     info->product_version = 0;

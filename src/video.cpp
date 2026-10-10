@@ -422,8 +422,15 @@ bool start(std::uint32_t width, std::uint32_t height, Codec codec, const std::ui
     g.config.codec_type = hevc ? 2u : 1u;             // VideoDec2 codec ids (ProsperoLight modes)
     g.config.profile = hevc ? 0x000ee049u : 100u;     // HEVC Main / H.264 High
     g.config.max_level = hevc ? 153u : 51u;
-    g.config.max_width = 1920;
-    g.config.max_height = 1088;
+    // Size the decoder to the actual stream, not a fixed 1920x1088: the host can be an
+    // ultrawide or a 1440p/4K display, and anything wider than the configured max was
+    // cropped before our scaler ever saw it. Keep >= 1920x1088 for headroom and cap at
+    // 4096x2176 (H.264 level 5.1 / HEVC 5.1). The display scaler fits whatever size to 1080p.
+    auto align16 = [](std::uint32_t v) { return (v + 15u) & ~15u; };
+    std::uint32_t mw = width < 1920 ? 1920 : (width > 4096 ? 4096 : width);
+    std::uint32_t mh = height < 1088 ? 1088 : (height > 2176 ? 2176 : height);
+    g.config.max_width = align16(mw);
+    g.config.max_height = align16(mh);
     g.config.max_dpb_frames = 4;
     g.config.pipeline_depth = 1;
     g.config.compute_queue = reinterpret_cast<std::uint64_t>(g.compute_queue);

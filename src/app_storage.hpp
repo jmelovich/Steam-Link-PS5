@@ -35,12 +35,12 @@ void host_key_save(std::uint64_t host_client_id, const std::uint8_t key[32]);
 // User settings, a key=value file under the data directory.
 struct Settings
 {
-    std::uint32_t max_height = 720;    // 1080 or 720: the resolution asked of the host
+    std::uint32_t max_height = 1080;   // 1080 or 720: the resolution asked of the host
     bool hevc = false;                 // offer HEVC to the host
     std::uint32_t audio_channels = 2;  // 2 or 6
     std::uint64_t last_host = 0;       // client id of the PC streamed from last
     bool auto_connect = true;          // connect to last_host without asking
-    std::uint32_t bitrate_kbps = 3000; // cap asked of the host: 5000, 10000, 15000, 20000, 30000
+    std::uint32_t bitrate_kbps = 0;    // cap asked of the host in kbit/s; 0 = AUTO (let Steam/host decide)
     std::uint32_t quality = 1;         // 0 balanced, 1 fast, 2 beautiful
 };
 Settings &settings();

@@ -163,8 +163,8 @@ void launcher_input()
         const bool backward = slp::hid::pressed(now.left, before.left);
         if (forward || backward)
         {
-            static const std::uint32_t bitrates[] = {2000, 3000, 5000, 10000, 15000, 20000, 30000};
-            constexpr int bitrate_count = 7;
+            static const std::uint32_t bitrates[] = {0, 2000, 3000, 5000, 10000, 15000, 20000, 30000}; // 0 = AUTO
+            constexpr int bitrate_count = 8;
             switch (status.settings_cursor)
             {
             case 0: settings.max_height = settings.max_height == 1080 ? 720 : 1080; break;
@@ -356,7 +356,10 @@ void draw_settings(ps5::demo::Canvas &canvas) noexcept
     std::lock_guard lock{status.mutex};
     const slp::Settings &settings = slp::settings();
     char bitrate[32];
-    std::snprintf(bitrate, sizeof bitrate, "%u MBIT/S", settings.bitrate_kbps / 1000);
+    if (settings.bitrate_kbps == 0)
+        std::snprintf(bitrate, sizeof bitrate, "AUTO (STEAM SETTING)");
+    else
+        std::snprintf(bitrate, sizeof bitrate, "%u MBIT/S", settings.bitrate_kbps / 1000);
     const char *rows[5][2] = {
         {"RESOLUTION", settings.max_height == 1080 ? "1080P" : "720P"},
         {"BITRATE CAP", bitrate},
