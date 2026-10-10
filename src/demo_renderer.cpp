@@ -8,6 +8,7 @@
  */
 
 #include "demo_renderer.hpp"
+#include "app_log.hpp"
 
 #include <array>
 #include <cstddef>
@@ -41,6 +42,27 @@ extern "C"
     int sceVideoOutSubmitFlip(std::int32_t handle, std::int32_t buffer_index,
                               std::uint32_t flip_mode, std::int64_t flip_argument);
     int sceVideoOutWaitVblank(std::int32_t handle);
+    // 120 Hz output. Public homebrew ABI, corroborated by three independent clean-room
+    // sources (AnyPS5, ps5-opengl, EVO-PLAYER-PS5; the latter two run it on real consoles).
+    // `mode` is a uint64 enum: 0x1 = default 59.94 Hz, 0xF = 119.88 Hz. Call after
+    // sceVideoOutOpen and before SetFlipRate / RegisterBuffers2. IsOutputSupported > 0 means
+    // the panel and the system "Enable 120 Hz Output" setting allow it; ConfigureOutput
+    // returns 0 on success (0x80290016 = unsupported, 0x8029001E = unknown mode).
+    int sceVideoOutIsOutputSupported(std::int32_t handle, std::uint64_t mode, const void *options,
+                                     const void *reserved0, std::uint64_t reserved1);
+    int sceVideoOutConfigureOutput(std::int32_t handle, std::uint64_t mode, const void *options,
+                                   const void *reserved0, std::uint64_t reserved1);
+    // 48-byte layout, identical to Orbis; refreshRate is an ID (3 = 59.94 Hz, 13 = 119.88 Hz)
+    // and reports the rate the output actually accepted once a frame has been presented.
+    struct SceVideoOutResolutionStatus
+    {
+        std::uint32_t fullWidth, fullHeight, paneWidth, paneHeight;
+        std::uint64_t refreshRate;
+        float screenSizeInInch;
+        std::uint16_t flags, reserved0;
+        std::uint32_t reserved1[3];
+    };
+    int sceVideoOutGetResolutionStatus(std::int32_t handle, SceVideoOutResolutionStatus *status);
     bool ps5ObserveOwnedAllocation(const void *address) noexcept;
 }
 
@@ -451,6 +473,27 @@ void read_asset_text(const char *path, std::span<char> destination,
     if (video < 0)
         halt("Hello World: sceVideoOutOpen failed");
 
+    // Ask for 120 Hz output when the panel and the system setting allow it. A PS5 title runs
+    // at 60 Hz until it requests a high-refresh mode, which is why the stream could never show
+    // 120 fps; once this takes, sceVideoOutWaitVblank fires ~120x/s, the app measures that and
+    // advertises 119.88 Hz to the host, and the host's Remote Play setting decides the rest.
+    // Must come before SetFlipRate / RegisterBuffers2 (no flips pending). The title also has
+    // to declare the capability in param.json (attribute3 bit 0x80040) or this is refused.
+    // Unsupported panel or setting -> stay at 60 Hz, silently.
+    {
+        constexpr std::uint64_t k_output_mode_120hz = 0xF;
+        const int supported = sceVideoOutIsOutputSupported(video, k_output_mode_120hz, nullptr, nullptr, 0);
+        // Sources disagree on whether IsOutputSupported returns >0 or >=0 for "yes", so let
+        // ConfigureOutput's own return code be the authority: attempt it unless the query hard
+        // errored (negative). A refusal (e.g. 0x80290016 unsupported) just leaves us at 60.
+        int configured = -1;
+        if (supported >= 0)
+            configured = sceVideoOutConfigureOutput(video, k_output_mode_120hz, nullptr, nullptr, 0);
+        slp::log("video out: 120 Hz isSupported rc=0x%x, configure rc=0x%x -> %s",
+                 static_cast<unsigned>(supported), static_cast<unsigned>(configured),
+                 configured == 0 ? "120 Hz output requested" : "staying at 60 Hz (panel/system setting)");
+    }
+
     const std::size_t pool_size = sceKernelGetDirectMemorySize();
     if (pool_size < memory_bytes)
         halt("Hello World: insufficient direct memory");
@@ -495,6 +538,15 @@ void read_asset_text(const char *path, std::span<char> destination,
         halt("Hello World: initial flip failed");
 
     (void)sceVideoOutWaitVblank(video);
+    {
+        // The accepted output rate is only reported once a frame has been presented.
+        SceVideoOutResolutionStatus status{};
+        const int rc = sceVideoOutGetResolutionStatus(video, &status);
+        slp::log("video out: resolution status rc=0x%x full %ux%u pane %ux%u refresh id %llu "
+                 "(3 = 59.94 Hz, 13 = 119.88 Hz)",
+                 static_cast<unsigned>(rc), status.fullWidth, status.fullHeight, status.paneWidth,
+                 status.paneHeight, static_cast<unsigned long long>(status.refreshRate));
+    }
     notify(ready_message);
 
     // Each frame is drawn whole into the buffer that isn't on screen, then shown.
