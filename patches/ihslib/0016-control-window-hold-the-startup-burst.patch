@@ -1,0 +1,50 @@
+From: steamlink-ps5
+Subject: control: size the frame window to hold the Big Picture startup burst
+
+The second intermittent-startup failure: the session authenticated, started the
+audio channel, then logged dozens of "Frames window overflow" and disconnected
+("THE STREAM ENDED") before the video channel (channel 4) was ever added - a
+black screen where Big Picture never appeared, exactly the user's report.
+
+The control channel's frame window was 128 slots. Control frames are reliable
+and delivered strictly in order, so a single lost reliable packet - or one lost
+fragment of a large config message, of which Big Picture's initial state sync
+sends many - stalls the window head (IHS_SessionPacketsWindowPoll refuses to
+advance past a gap). While the head waits for the host to resend the missing
+packet, the rest of the burst keeps arriving and piles up behind it. At 128
+slots the window filled in under a second; the next packet tripped the
+"too far ahead" branch of IHS_SessionPacketsWindowAdd, which returns false, and
+OnControlReceived treats that as fatal (IHS_SessionDisconnect). Captured in a
+relaunch loop: 1 in ~12 launches overflowed this way.
+
+The gap does heal on its own - the host retransmits the un-ACKed packet on its
+sender-driven reliable-delivery timer, and our ACKs already go out redundantly
+on a lossy uplink (patch 0013) - after which the entire backlog drains in order.
+The window just needs room to wait. Raise it to 2048 slots (matching the video
+window); the startup burst fits with margin. Overflow now fires only if 2048
+packets accumulate without the gap ever healing - a genuinely dead link - where
+disconnecting so the launcher can retry is the correct backstop.
+
+--- a/src/session/channels/ch_control.c
++++ b/src/session/channels/ch_control.c
+@@ -138,7 +138,19 @@
+ static void OnControlInit(IHS_SessionChannel *channel, const void *data) {
+     IHS_UNUSED(data);
+     IHS_SessionChannelControl *control = (IHS_SessionChannelControl *) channel;
+-    control->framePacketWindow = IHS_SessionPacketsWindowCreate(128);
++    // 128 slots could not hold the Big Picture startup burst while a single lost
++    // reliable packet healed. Control frames are delivered strictly in order, so
++    // one missing packet (or one missing fragment of a large config message)
++    // stalls the window head until the host resends it; meanwhile the rest of the
++    // burst piles up. At 128 the window filled in under a second and overflowed,
++    // tripping IHS_SessionDisconnect before the video channel was ever added - the
++    // intermittent black screen where Big Picture never launched. The host resends
++    // the un-ACKed packet on its own timer (sender-driven reliable delivery) and
++    // the whole backlog then drains in order, so the fix is simply room to wait:
++    // 2048 slots (matching the video window) buffers the entire burst. Overflow
++    // now only fires if 2048 packets pile up without the gap healing - a genuinely
++    // dead link - where ending the stream cleanly is the right backstop.
++    control->framePacketWindow = IHS_SessionPacketsWindowCreate(2048);
+ }
+
+ static void OnControlDeinit(IHS_SessionChannel *channel) {

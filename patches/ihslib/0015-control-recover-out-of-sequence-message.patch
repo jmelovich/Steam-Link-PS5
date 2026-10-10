@@ -1,0 +1,50 @@
+From: steamlink-ps5
+Subject: control: deliver an out-of-sequence message instead of dropping it
+
+Intermittently the stream came up crippled: a black screen where Big Picture
+never launched, or a pad that showed "connected" in Steam yet sent no input.
+The control channel encrypts each message with a per-message sequence counter;
+the client keeps its own counter (recvEncryptSequence) and compares. When the
+host's counter ran one ahead of ours - an earlier encrypted message was lost or
+never counted on our side - IHS_SessionFrameDecrypt returned SequenceMismatch
+and OnControlReceived threw the message away, resyncing the counter forward.
+
+But by the time that result is returned the frame has already been decrypted
+AND its HMAC verified against the session key (frame_crypto.c): the payload is
+a genuine, authentic host message. The only thing wrong is that it arrived
+after a gap. Discarding it cost exactly one real control message per desync -
+and when the unlucky message was "start input reports" the pad opened but never
+streamed input (captured in a launch log right after "host opened pad 0"), and
+when it was a stream-start message the host never began streaming, i.e. the
+black screen. A forward sequence skip can never be a replay (those come back as
+OldSequence and are still ignored), so the message is safe to apply.
+
+Resync the counter as before, but then deliver the decrypted message through
+IHS_SessionChannelControlOnMessageReceived - the same call the OK path makes,
+with `plain` already offset past the 8-byte sequence - instead of dropping it.
+
+diff -ru a/src/session/channels/ch_control.c b/src/session/channels/ch_control.c
+--- a/src/session/channels/ch_control.c
++++ b/src/session/channels/ch_control.c
+@@ -190,11 +190,20 @@
+                     break;
+                 }
+                 case IHS_SessionFrameDecryptSequenceMismatch: {
++                    // The frame decrypted and its HMAC verified: the payload is a genuine
++                    // host message whose per-message sequence ran ahead of ours because an
++                    // earlier encrypted message never reached us. Dropping it here cost a
++                    // real control message at random - "start input reports" (a connected
++                    // pad that never sends input) or a stream-start message (a black
++                    // screen, Big Picture never launches): the intermittent crippled
++                    // startup. A forward skip can never be a replay, so resync our counter
++                    // and deliver the message instead of discarding it.
+                     IHS_SessionLog(channel->session, IHS_LogLevelWarn, "Control",
+-                                   "Mismatched message sequence %llu (expect %llu). id=%d, retransmit=%d, type=%s",
++                                   "Recovered out-of-sequence message %llu (expect %llu). id=%d, retransmit=%d, type=%s",
+                                    actualSequence, expectSequence, frame.header.packetId, frame.header.retransmitCount,
+                                    ControlMessageTypeName(type));
+                     control->recvEncryptSequence = actualSequence + 1;
++                    IHS_SessionChannelControlOnMessageReceived(channel, type, &plain, &frame.header);
+                     break;
+                 }
+                 case IHS_SessionFrameDecryptFailed: {
