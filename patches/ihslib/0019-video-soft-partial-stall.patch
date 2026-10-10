@@ -1,0 +1,57 @@
+From: steamlink-ps5
+Subject: video: don't freeze on a stalled partial frame either (patch 0019)
+
+Follow-up to 0018 after the user reported the stutter was no better. Per-frame
+instrumentation (present cadence + arrival-gap histograms) showed two things 0018
+had not: constant present judder from arrival jitter, and - the big one - periodic
+200-640 ms hitches whose arrival gaps lined up exactly with "Partial frames stalled
+for 150 ms, request keyframe" followed by "33/35/36 partial frames was cleared".
+
+CheckPartialOverflow was the other hard-freeze path 0018 left in place: when one
+frame never received all its fragments (a lost packet), it requested a keyframe and
+set waitingKeyFrame, so every following frame was dropped until a full IDR arrived -
+the keyframe round-trip being the 200-640 ms hitch, firing ~9 times in 40 s.
+
+Make it soft, matching 0018's sequence-gap handling: drop the stuck partials
+(DiscardPending) so assembly advances to the next frame, reset the assembly flags,
+ask for a keyframe once (coalesced via keyframeAskedAt) to heal cleanly, and KEEP
+DECODING. A missing-fragment frame becomes a brief artifact the next keyframe wipes,
+not a multi-hundred-ms freeze. The decoder reset path (SubmitFrame ReportLost ->
+ApplyDecoderReset) remains the backstop for a genuinely undecodable frame.
+
+This kills the big hitches. The remaining constant judder is the absence of a
+presentation jitter buffer (present-latest-every-vblank turns arrival jitter into
+repeats/skips); that is a separate, larger change with a latency tradeoff, tracked
+separately.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_014PYjQSBjAfPknHDEJuTGv5
+
+--- a/src/session/channels/video/ch_data_video.c
++++ b/src/session/channels/video/ch_data_video.c
+@@ -415,10 +415,21 @@
+         return;
+     }
+     IHS_SessionLog(channel->session, IHS_LogLevelWarn, "Video",
+-                   "Partial frames stalled for %u ms, request keyframe", span * 1000 / 65536);
+-    IHS_SessionChannelDataLost(channel);
+-    videoCh->states.waitingKeyFrame = IHS_TimerNow();
+-    videoCh->states.keyframeAskedAt = videoCh->states.waitingKeyFrame;
++                   "Partial frames stalled for %u ms, drop and keep decoding", span * 1000 / 65536);
++    // A stalled partial means one frame never got all its fragments (a lost packet). The old
++    // code hard-waited for a keyframe here, freezing the picture for the whole keyframe
++    // round-trip - measured at 200-640 ms, several times a minute, the worst of the visible
++    // judder. Instead drop the stuck partials so assembly advances to the next frame, ask for
++    // a keyframe once (coalesced) to heal cleanly, and KEEP DECODING. The decoder reset path
++    // (SubmitFrame ReportLost -> ApplyDecoderReset) is still the backstop for a frame that
++    // genuinely can't be decoded without its lost reference, so corruption cannot persist.
++    DiscardPending(videoCh);
++    videoCh->states.frameFinished = false;
++    videoCh->states.frameStarted = false;
++    if (videoCh->states.keyframeAskedAt == 0) {
++        IHS_SessionChannelDataLost(channel);
++        videoCh->states.keyframeAskedAt = IHS_TimerNow();
++    }
+ }
+ 
+ static void ApplyDecoderReset(IHS_SessionChannel *channel) {
