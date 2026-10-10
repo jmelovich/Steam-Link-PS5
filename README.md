@@ -179,6 +179,13 @@ git push origin v1.1.0
 CI then builds and opens a **draft** release with the ZIP attached. **Publish it** from the
 Releases page — a draft cannot be downloaded, so stores and users can't see it.
 
+You can do it entirely in the browser instead: edit `sce_sys/param.json` to raise
+`contentVersion`, commit it to `main`, then **Releases → Draft a new release**, type the
+matching new tag (`v1.1.0`), and **Publish release**. That creates the tag and the release
+together; CI then verifies the version and uploads the ZIP into the release you just made,
+leaving your notes untouched. Either route works — the only rule is that the committed
+`contentVersion` and the tag agree, and CI fails the release if they don't.
+
 Why the order matters: a PS5 decides an installed copy is out of date by comparing
 `sce_sys/param.json`'s `contentVersion`, and [ps5-homebrew-catalog][catalog] reads that value
 from the **committed** `param.json` at the release tag. If the bump isn't in the commit the tag

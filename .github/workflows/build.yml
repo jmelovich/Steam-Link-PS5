@@ -106,11 +106,31 @@ jobs:
           name: ${{ needs.build.outputs.title-id }}
           path: dist
 
-      - name: Publish a draft release
+      # Two ways a tag gets here, and both must work.
+      #
+      #   tools/release.sh + git push   - the tag arrives with no release, so
+      #                                   create a draft for review.
+      #   GitHub's "Draft a new release" - publishing in the web UI creates the
+      #                                   tag AND the release together, so by
+      #                                   the time this runs the release already
+      #                                   exists. Creating it again would fail,
+      #                                   and the ZIP would never be attached;
+      #                                   upload into it instead and leave the
+      #                                   notes the author wrote alone.
+      - name: Attach the build to its release
         env:
           GH_TOKEN: ${{ github.token }}
           ZIP: dist/${{ needs.build.outputs.title-id }}.zip
         run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+              echo "release $GITHUB_REF_NAME already exists; uploading assets into it"
+              gh release upload "$GITHUB_REF_NAME" \
+                  "$ZIP" LICENSE THIRD_PARTY_NOTICES.md --clobber
+              gh release view "$GITHUB_REF_NAME" --json isDraft,assets \
+                  --jq '"draft=\(.isDraft) assets=\([.assets[].name]|join(","))"'
+              exit 0
+          fi
+
           previous=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
           {
               printf 'Unpack `%s` into `/data/homebrew/` on the console, then launch\n' "$(basename "$ZIP")"

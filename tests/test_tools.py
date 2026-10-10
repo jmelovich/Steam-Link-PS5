@@ -303,6 +303,12 @@ class ToolTests(unittest.TestCase):
         # stamping it at build time would leave the committed value behind.
         self.assertIn("tools/set-content-version.sh --check", workflow)
         self.assertIn("--draft", workflow)
+        # Publishing from GitHub's web UI creates the tag and the release
+        # together, so the release can already exist when this job runs.
+        # Creating it again fails and the ZIP is never attached; the workflow
+        # has to upload into the existing release instead.
+        self.assertIn("gh release view", workflow)
+        self.assertIn("gh release upload", workflow)
         # Pinned, not floating: this toolchain needs the Clang 18 image, which
         # only ubuntu-24.04 carries. Ignore comments, which explain the pin.
         code = "\n".join(
