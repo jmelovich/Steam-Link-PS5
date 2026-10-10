@@ -155,7 +155,7 @@ void launcher_input()
     case Mode::settings:
     {
         slp::Settings &settings = slp::settings();
-        if (slp::hid::pressed(now.down, before.down) && status.settings_cursor < 4)
+        if (slp::hid::pressed(now.down, before.down) && status.settings_cursor < 5)
             ++status.settings_cursor;
         if (slp::hid::pressed(now.up, before.up) && status.settings_cursor > 0)
             --status.settings_cursor;
@@ -181,6 +181,7 @@ void launcher_input()
             case 2: settings.quality = (settings.quality + (forward ? 1 : 2)) % 3; break;
             case 3: settings.hevc = !settings.hevc; break;
             case 4: settings.auto_connect = !settings.auto_connect; break;
+            case 5: settings.jitter_frames = (settings.jitter_frames + (forward ? 1 : 4)) % 5; break;
             }
         }
         if (slp::hid::pressed(now.circle, before.circle) || slp::hid::pressed(now.options, before.options))
@@ -395,14 +396,21 @@ void draw_settings(ps5::demo::Canvas &canvas) noexcept
         std::snprintf(bitrate, sizeof bitrate, "AUTO (STEAM SETTING)");
     else
         std::snprintf(bitrate, sizeof bitrate, "%u MBIT/S", settings.bitrate_kbps / 1000);
-    const char *rows[5][2] = {
+    char jitter[32];
+    if (settings.jitter_frames == 0)
+        std::snprintf(jitter, sizeof jitter, "OFF (LOWEST LATENCY)");
+    else
+        std::snprintf(jitter, sizeof jitter, "%u FRAMES (~%u MS)", settings.jitter_frames,
+                      settings.jitter_frames * 1000u / 60u);
+    const char *rows[6][2] = {
         {"RESOLUTION", settings.max_height == 1080 ? "1080P" : "720P"},
         {"BITRATE CAP", bitrate},
         {"QUALITY", settings.quality == 1 ? "FAST" : settings.quality == 2 ? "BEAUTIFUL" : "BALANCED"},
         {"HEVC", settings.hevc ? "ON" : "OFF"},
         {"AUTO CONNECT TO LAST PC", settings.auto_connect ? "ON" : "OFF"},
+        {"SMOOTHING BUFFER", jitter},
     };
-    for (int i = 0; i < 5; ++i)
+    for (int i = 0; i < 6; ++i)
     {
         const unsigned y = 330 + static_cast<unsigned>(i) * 90;
         if (i == status.settings_cursor)
@@ -765,12 +773,10 @@ void on_session_configuring(IHS_Session *, IHS_SessionConfig *config, void *)
     const slp::Settings &settings = slp::settings();
     config->enableAudio = true;
     config->enableHevc = settings.hevc;
-    // "AUTO" (0) used to fall through to ihslib's hard-coded 30000 kbit/s (+90000 burst),
-    // which saturates a shared Wi-Fi link and causes periodic congestion loss bursts -> the
-    // multi-hundred-ms freezes. Measured on this link: 30 Mbit worst freeze 1415 ms, 10 Mbit
-    // 420 ms. Default AUTO to a sane 15 Mbit; the user can still pick an explicit cap.
-    config->maxBitrateKbps =
-        settings.bitrate_kbps != 0 ? static_cast<std::int32_t>(settings.bitrate_kbps) : 15000;
+    // AUTO (0) leaves the host/Steam bandwidth setting in charge (ihslib's default cap).
+    // A lower client cap measured as WORSE in practice (coarser image, no fewer bursts),
+    // so do not cap below the user's choice; they raise it host-side when they want more.
+    config->maxBitrateKbps = static_cast<std::int32_t>(settings.bitrate_kbps);
     config->quality = static_cast<std::int32_t>(settings.quality);
     config->maxResolutionY = static_cast<std::int32_t>(settings.max_height);
     config->maxResolutionX = settings.max_height <= 720 ? 1280 : 1920;

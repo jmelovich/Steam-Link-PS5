@@ -42,6 +42,9 @@ struct Settings
     bool auto_connect = true;          // connect to last_host without asking
     std::uint32_t bitrate_kbps = 0;    // cap asked of the host in kbit/s; 0 = AUTO (let Steam/host decide)
     std::uint32_t quality = 1;         // 0 balanced, 1 fast, 2 beautiful
+    std::uint32_t jitter_frames = 2;   // decoded frames buffered before display (0-4); absorbs
+                                       // arrival jitter so it does not become on-screen judder.
+                                       // 0 = present newest immediately (lowest latency, more stutter).
 };
 Settings &settings();
 void settings_save();

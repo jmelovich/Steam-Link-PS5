@@ -12,6 +12,7 @@
 
 #include "video.hpp"
 #include "app_log.hpp"
+#include "app_storage.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -186,15 +187,26 @@ struct Decoder
     bool needs_reset = false;
     videodec2_decoder_config config{};
 
-    // Three RGBA output buffers: the newest complete one (front), the one the
-    // presenter is drawing from (presenting), and one free for the next convert.
-    std::uint32_t *rgba[3] = {nullptr, nullptr, nullptr};
+    // RGBA output buffers form a small jitter buffer: decoded frames are queued (fifo)
+    // and the presenter pops one per vblank, paced, so network/decode timing jitter does
+    // not become on-screen judder. jitter_target frames are held before display; a larger
+    // value absorbs more jitter at the cost of latency. Buffers not in the fifo, not being
+    // presented and not mid-convert are free for the next decode.
+    static constexpr int kMaxRgba = 8;
+    std::uint32_t *rgba[kMaxRgba] = {};
     std::uint32_t rgba_capacity = 0;
-    int rgba_front = -1;
-    int rgba_presenting = -1;
+    int n_rgba = 0;                   // buffers actually allocated (jitter_target + headroom)
+    int fifo[kMaxRgba] = {};          // ready-frame buffer indices, oldest at [0]
+    std::uint64_t fifo_serial[kMaxRgba] = {};
+    int fifo_count = 0;
+    int presenting = -1;              // buffer currently on screen (held until the next pop)
+    int converting = -1;              // buffer a decode is converting into (reserved, off-limits)
+    std::uint64_t present_serial = 0; // serial currently presented (for the draw dedup)
+    std::uint32_t jitter_target = 2;  // frames to buffer before display; 0 = present newest now
+    bool primed = false;              // reached the target depth at least once since last underflow
     std::uint32_t frame_width = 0;
     std::uint32_t frame_height = 0;
-    std::uint64_t serial = 0;
+    std::uint64_t serial = 0;         // newest decoded serial
 };
 
 Decoder g;
@@ -228,8 +240,12 @@ void release_all()
         buffer = nullptr;
     }
     g.rgba_capacity = 0;
-    g.rgba_front = -1;
-    g.rgba_presenting = -1;
+    g.n_rgba = 0;
+    g.fifo_count = 0;
+    g.presenting = -1;
+    g.converting = -1;
+    g.present_serial = 0;
+    g.primed = false;
 }
 
 // BT.601 limited-range NV12 -> RGBA8888 (Steam captures BT.601 limited). One
@@ -502,21 +518,33 @@ bool start(std::uint32_t width, std::uint32_t height, Codec codec, const std::ui
         return false;
     }
 
-    // RGBA output buffers (visible size; the stream picks the height, e.g. 804).
+    // RGBA output buffers (visible size; the stream picks the height, e.g. 804). The jitter
+    // buffer needs jitter_target queued + 1 presenting + 1 converting + 1 free, so allocate
+    // jitter_target + 3 buffers (clamped to the array size).
+    g.jitter_target = slp::settings().jitter_frames;
+    if (g.jitter_target > 4)
+        g.jitter_target = 4;
+    g.n_rgba = static_cast<int>(g.jitter_target) + 3;
+    if (g.n_rgba > Decoder::kMaxRgba)
+        g.n_rgba = Decoder::kMaxRgba;
     g.frame_width = width;
     g.frame_height = height;
     g.rgba_capacity = width * height;
-    for (auto *&buffer : g.rgba)
+    for (int i = 0; i < g.n_rgba; ++i)
     {
-        buffer = static_cast<std::uint32_t *>(std::malloc(g.rgba_capacity * sizeof(std::uint32_t)));
-        if (!buffer)
+        g.rgba[i] = static_cast<std::uint32_t *>(std::malloc(g.rgba_capacity * sizeof(std::uint32_t)));
+        if (!g.rgba[i])
         {
             slp::log("video: rgba alloc failed");
             return false;
         }
     }
-    g.rgba_front = -1;
-    g.rgba_presenting = -1;
+    g.fifo_count = 0;
+    g.presenting = -1;
+    g.converting = -1;
+    g.present_serial = 0;
+    g.primed = false;
+    slp::log("video: jitter buffer %u frames (%d rgba buffers)", g.jitter_target, g.n_rgba);
     pool_start();
     g.serial = 0;
     g.input_sequence = 0;
@@ -529,9 +557,40 @@ bool start(std::uint32_t width, std::uint32_t height, Codec codec, const std::ui
     return true;
 }
 
+// --- jitter-buffer helpers; call with g.mutex held --------------------------------------
+// A buffer index free to decode into: not queued, not on screen, not mid-convert.
+int reserve_free_locked()
+{
+    for (int i = 0; i < g.n_rgba; ++i)
+    {
+        if (i == g.presenting || i == g.converting)
+            continue;
+        bool queued = false;
+        for (int j = 0; j < g.fifo_count; ++j)
+            if (g.fifo[j] == i)
+            {
+                queued = true;
+                break;
+            }
+        if (!queued)
+            return i;
+    }
+    return -1;
+}
+void fifo_pop_front_locked()
+{
+    for (int j = 0; j < g.fifo_count - 1; ++j)
+    {
+        g.fifo[j] = g.fifo[j + 1];
+        g.fifo_serial[j] = g.fifo_serial[j + 1];
+    }
+    if (g.fifo_count > 0)
+        --g.fifo_count;
+}
+
 bool submit(const std::uint8_t *access_unit, std::size_t length, bool keyframe)
 {
-    std::lock_guard lock{g.mutex};
+    std::unique_lock lock{g.mutex};
     if (!g.decoder || !access_unit || length == 0 || length > g.input_slot_size)
         return false;
     if (g.await_keyframe)
@@ -612,15 +671,33 @@ bool submit(const std::uint8_t *access_unit, std::size_t length, bool keyframe)
         slp::log("video: first picture %ux%u pitch=%u coded_h=%u format=0x%x", output.width,
                  output.height, pitch, output.height, output.frame_format);
 
-    // A buffer that is neither the newest complete one nor the one on screen.
-    int back = 0;
-    while (back == g.rgba_front || back == g.rgba_presenting)
-        ++back;
-    convert_parallel({nv12, pitch, decoded_height, width, height, g.rgba[back]});
-    g.rgba_front = back;
-    g.frame_width = width;
-    g.frame_height = height;
+    // Reserve a free buffer to convert into; if every buffer is busy, drop the oldest
+    // queued frame to free one (the presenter is draining slower than we decode).
+    int back = reserve_free_locked();
+    if (back < 0)
+    {
+        back = g.fifo[0];
+        fifo_pop_front_locked();
+    }
+    g.converting = back;
+    const std::uint32_t w = width, h = height;
+    // Convert OUTSIDE the lock: the CPU NV12->RGBA is the slow part, and holding g.mutex
+    // across it would block the presenter's latest()/release() every frame -> missed
+    // vblanks -> judder. `back` is reserved (converting) and the decoder's frame slot is
+    // stable until the next decode (submit is single-threaded), so the convert needs no lock.
+    lock.unlock();
+    convert_parallel({nv12, pitch, decoded_height, w, h, g.rgba[back]});
+    lock.lock();
+    g.converting = -1;
+    g.frame_width = w;
+    g.frame_height = h;
     ++g.serial;
+    g.fifo[g.fifo_count] = back;
+    g.fifo_serial[g.fifo_count] = g.serial;
+    ++g.fifo_count;
+    // Cap latency: never buffer much beyond the target (catch up by dropping the oldest).
+    while (g.fifo_count > static_cast<int>(g.jitter_target) + 2)
+        fifo_pop_front_locked();
     return true;
 }
 
@@ -633,20 +710,51 @@ void stop()
 bool latest(Frame &out)
 {
     std::lock_guard lock{g.mutex};
-    if (g.rgba_front < 0)
-        return false;
-    g.rgba_presenting = g.rgba_front;
-    out.rgba = g.rgba[g.rgba_front];
+    if (g.jitter_target == 0)
+    {
+        // Lowest latency: jump to the newest ready frame, discard any older queued ones.
+        while (g.fifo_count > 1)
+            fifo_pop_front_locked();
+        if (g.fifo_count == 1)
+        {
+            g.presenting = g.fifo[0];
+            g.present_serial = g.fifo_serial[0];
+            fifo_pop_front_locked();
+        }
+    }
+    else
+    {
+        // Paced jitter buffer: once the queue has filled to the target depth, release ONE
+        // frame per call (one per vblank). A late frame then draws from the buffer instead
+        // of repeating the last one, and a burst of early frames fills the buffer instead of
+        // being dropped -> even, judder-free motion. On underflow, hold the current frame and
+        // rebuild to the target before resuming.
+        if (!g.primed && g.fifo_count > static_cast<int>(g.jitter_target))
+            g.primed = true;
+        if (g.primed && g.fifo_count > 0)
+        {
+            g.presenting = g.fifo[0];
+            g.present_serial = g.fifo_serial[0];
+            fifo_pop_front_locked();
+        }
+        else if (g.primed && g.fifo_count == 0)
+        {
+            g.primed = false; // underflow: hold the last frame, refill before resuming
+        }
+    }
+    if (g.presenting < 0)
+        return false; // nothing decoded yet (or still priming the very first frames)
+    out.rgba = g.rgba[g.presenting];
     out.width = g.frame_width;
     out.height = g.frame_height;
-    out.serial = g.serial;
+    out.serial = g.present_serial;
     return true;
 }
 
 void release(const Frame &)
 {
-    std::lock_guard lock{g.mutex};
-    g.rgba_presenting = -1;
+    // The on-screen buffer stays reserved as g.presenting until the next latest() swaps it,
+    // so there is nothing to free here.
 }
 
 bool self_test(const char *annexb_path)

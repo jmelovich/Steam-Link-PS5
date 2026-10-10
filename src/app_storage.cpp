@@ -188,6 +188,11 @@ void settings_load()
             g_settings.bitrate_kbps = static_cast<std::uint32_t>(std::atoi(value));
         else if (!std::strcmp(key, "quality"))
             g_settings.quality = static_cast<std::uint32_t>(std::atoi(value)) % 3;
+        else if (!std::strcmp(key, "jitter_frames"))
+        {
+            const int jf = std::atoi(value);
+            g_settings.jitter_frames = static_cast<std::uint32_t>(jf < 0 ? 0 : (jf > 4 ? 4 : jf));
+        }
     }
     if (g_settings.bitrate_kbps != 0 && (g_settings.bitrate_kbps < 2000 || g_settings.bitrate_kbps > 60000))
         g_settings.bitrate_kbps = 0; // 0 = AUTO
@@ -209,10 +214,11 @@ void settings_save()
     char text[256];
     const int length = std::snprintf(
         text, sizeof text,
-        "max_height=%u\nhevc=%d\naudio_channels=%u\nlast_host=%llu\nauto_connect=%d\nbitrate_kbps=%u\nquality=%u\n",
+        "max_height=%u\nhevc=%d\naudio_channels=%u\nlast_host=%llu\nauto_connect=%d\nbitrate_kbps=%u\nquality=%u\n"
+        "jitter_frames=%u\n",
         g_settings.max_height, g_settings.hevc ? 1 : 0, g_settings.audio_channels,
         static_cast<unsigned long long>(g_settings.last_host), g_settings.auto_connect ? 1 : 0,
-        g_settings.bitrate_kbps, g_settings.quality);
+        g_settings.bitrate_kbps, g_settings.quality, g_settings.jitter_frames);
     const int fd = open(settings_path().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd < 0)
         return;
