@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Steam-Link-PS5 - Run a command on the console through shsrv.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Run a command on a jailbroken PS5 through shsrv (telnet, port 2323)."""
 import socket, sys, time
 

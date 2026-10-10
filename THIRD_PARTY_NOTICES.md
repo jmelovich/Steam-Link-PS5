@@ -111,10 +111,11 @@ replace the pinned SDK or install files globally. PacBrew recipes and every
 linked third-party library retain their upstream licenses; applications must
 review those terms before redistribution.
 
-The update-check example (`make update-check-example`) selects `libcurl`, which
-statically links these PacBrew libraries into the example title. Its build
-output stays under ignored `dist/` and is not distributed by this repository; an
-application that ships the update check ships them and must carry their notices:
+**This application selects no PacBrew package**, so none of the libraries below
+are built, linked or distributed by this repository today. They are recorded
+because the boilerplate's update-check example selected `libcurl`, and an
+application that later adds an update check over libcurl would ship them and
+must carry their notices:
 
 | Component | Version in PacBrew v0.40.2 | License |
 | --- | --- | --- |
@@ -133,11 +134,13 @@ Hinnant's public-domain `civil_from_days` algorithm.
 
 `third_party/miniz/` holds [miniz](https://github.com/richgel999/miniz) 3.0.2
 (commit `293d4db1b7d0ffee9756d035b9ac6f7431ef8492`), MIT, unmodified, with its
-`LICENSE`; `SOURCE.json` records each file's SHA-256. Only the self-update
-helper (`examples/self-update-helper`) and its host test link it; an
-application that ships that helper ships miniz and must carry its notice. The
-helper's archive validation and file helpers are original BlackBearReloaded
-code (GPL-3.0-or-later), taken from the ProsperoStore project.
+`LICENSE`; `SOURCE.json` records each file's SHA-256.
+
+**Nothing in this repository currently links miniz**, so the shipped app
+contains none of it. It is retained, rather than deleted, because any installer
+or self-update helper added later needs to read the release ZIP, and this is the
+vetted copy to use. Anything that does link it ships miniz and must carry its
+notice.
 
 ## Optional UFS2Tool dependency
 

@@ -115,8 +115,14 @@ class ToolTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("/data/homebrew/PPSA99999/", result.stdout)
-        self.assertIn("PPSA99999.{ffpkg,ffpfsc}", result.stdout)
+        # Read the title from param.json rather than hardcoding it: this
+        # assertion was inherited asserting the boilerplate's placeholder
+        # PPSA99999 and silently failed once the project took its own ID.
+        title_id = json.loads(
+            (ROOT / "sce_sys/param.json").read_text(encoding="utf-8")
+        )["titleId"]
+        self.assertIn(f"/data/homebrew/{title_id}/", result.stdout)
+        self.assertIn(f"{title_id}.{{ffpkg,ffpfsc}}", result.stdout)
         self.assertIn("no network request was sent", result.stdout)
 
     def test_deploy_dry_run_uses_mocked_build_and_no_network(self):
@@ -193,35 +199,15 @@ class ToolTests(unittest.TestCase):
             self.assertIn("/data/homebrew/PPSA54321/", result.stdout)
             self.assertNotIn("/data/homebrew/PPSA12345/", result.stdout)
 
-    def test_pull_request_builds_are_named_and_labelled(self):
-        workflow = (ROOT / ".github/workflows/tooling.yml").read_text(encoding="utf-8")
-        self.assertIn(
-            'echo "artifact=${GITHUB_REPOSITORY##*/}-PR$PR_NUMBER-$short" >> "$GITHUB_OUTPUT"',
-            workflow,
-        )
-        self.assertIn('echo "BUILD_LABEL=PR $PR_NUMBER, $short" >> "$GITHUB_ENV"', workflow)
-        self.assertIn("name: ${{ steps.label.outputs.artifact }}", workflow)
-        # The release job still finds a tag's build under its commit.
-        self.assertIn('--name "ps5-native-app-boilerplate-$GITHUB_SHA"', workflow)
-        self.assertIn(
-            'echo "artifact=ps5-native-app-boilerplate-$GITHUB_SHA" >> "$GITHUB_OUTPUT"', workflow
-        )
-        # A contributor's code is never built with write access or secrets.
-        self.assertNotIn("pull_request_target:", workflow)
-        build = (ROOT / "tools/build.sh").read_text(encoding="utf-8")
-        self.assertIn('> "$app/build-label.txt"', build)
-        self.assertIn("{1,40}$", build)
-        self.assertLess(build.index("BUILD_LABEL must be"), build.index("ninja_run\n\napp="))
-        self.assertIn('"/app0/build-label.txt"', (ROOT / "src/main.cpp").read_text())
+    # The boilerplate also asserted the content of its own CI file,
+    # .github/workflows/tooling.yml, down to literal strings such as
+    # "ps5-native-app-boilerplate-$GITHUB_SHA". This project replaced that
+    # workflow with .github/workflows/build.yml, so those assertions tested a
+    # file that does not exist here and could only error. The workflow is
+    # covered by actually running on GitHub; what is kept below is the part
+    # that asserts this repository's own behaviour.
 
-    def test_automation_builds_the_zip_only(self):
-        workflow = (ROOT / ".github/workflows/tooling.yml").read_text(encoding="utf-8")
-        for line in workflow.splitlines():
-            if "ffpfsc" in line.lower():
-                self.assertIn("switched off", line)
-        self.assertIn("run: make app", workflow)
-        self.assertIn('sha256sum "$TITLE_ID.zip" > SHA256SUMS', workflow)
-        self.assertIn('assets=("release/$FOLDER_ZIP" "release/$CHECKSUM")', workflow)
+    def test_ffpfsc_image_is_refused_before_anything_is_built(self):
         # Asked for by name, the image is refused before anything is built.
         result = subprocess.run(
             ["bash", str(ROOT / "tools/build.sh"), "Ffpfsc"],
@@ -232,6 +218,67 @@ class ToolTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 2)
         self.assertIn("switched off for now", result.stderr)
+
+    def test_content_version_is_stamped_from_a_release_tag(self):
+        # Stores and updaters compare contentVersion, not the git tag, so the
+        # mapping has to be exact and must refuse anything NN.NNN.NNN cannot
+        # hold rather than silently truncating to a lower version.
+        script = str(ROOT / "tools/set-content-version.sh")
+        cases = {
+            "v1.2.3": "01.002.003",
+            "1.2.3": "01.002.003",
+            "v0.1.0": "00.001.000",
+            "v2.10.0-rc1": "02.010.000",
+            "v99.999.999": "99.999.999",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            param = Path(directory) / "param.json"
+            for version, expected in cases.items():
+                shutil.copy2(ROOT / "sce_sys/param.json", param)
+                result = subprocess.run(
+                    ["bash", script, version],
+                    env={**os.environ, "PARAM_JSON": str(param)},
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                written = json.loads(param.read_text(encoding="utf-8"))
+                self.assertEqual(written["contentVersion"], expected, version)
+                # Only that one field moves; the rest of param.json is intact.
+                baseline = json.loads(
+                    (ROOT / "sce_sys/param.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(
+                    {k: v for k, v in written.items() if k != "contentVersion"},
+                    {k: v for k, v in baseline.items() if k != "contentVersion"},
+                )
+                self.assertRegex(written["contentVersion"], r"^\d{2}\.\d{3}\.\d{3}$")
+
+            for bad in ("v100.0.0", "v1.1000.0", "v1.2", "notaversion", ""):
+                shutil.copy2(ROOT / "sce_sys/param.json", param)
+                result = subprocess.run(
+                    ["bash", script, bad],
+                    env={**os.environ, "PARAM_JSON": str(param)},
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertNotEqual(result.returncode, 0, f"{bad!r} should be refused")
+
+    def test_release_workflow_stamps_the_version_and_drafts_the_release(self):
+        workflow = (ROOT / ".github/workflows/build.yml").read_text(encoding="utf-8")
+        # A tag build must stamp contentVersion, or every release looks like the
+        # same version to a store even though the tag moved.
+        self.assertIn("tools/set-content-version.sh", workflow)
+        self.assertIn("--draft", workflow)
+        # Pinned, not floating: this toolchain needs the Clang 18 image, which
+        # only ubuntu-24.04 carries. Ignore comments, which explain the pin.
+        code = "\n".join(
+            line for line in workflow.splitlines() if not line.lstrip().startswith("#")
+        )
+        self.assertNotIn("ubuntu-latest", code)
+        self.assertIn("ubuntu-24.04", code)
 
     def test_native_writer_anchors_relro_and_checks_load_congruence(self):
         source = (ROOT / "tooling/native/sce_module_writer.cpp").read_text(

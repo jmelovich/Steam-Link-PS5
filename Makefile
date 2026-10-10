@@ -70,7 +70,7 @@ RUNTIME_INPUTS := tools/rebuild-libc.sh tools/build-host-tools.sh tools/ninja-bu
 	$(wildcard tooling/native/runtime/*.txt)
 HOST_UNIT_TEST := build/tests/demo_renderer_tests
 
-.PHONY: all app build init doctor test test-deps test-unit test-integration libc deps pacbrew pacbrew-list assets-check format format-check tidy lint check ffpkg ffpfsc packages sandbox-elevation-example sandbox-elevation-ffpfsc update-check-example test-update-check self-update-helper self-update-example test-self-update deploy undeploy clean distclean help
+.PHONY: all app build init doctor test test-deps test-unit test-integration libc deps pacbrew pacbrew-list assets-check format format-check tidy lint check ffpkg ffpfsc packages deploy undeploy clean distclean help
 
 all: app
 build: app
@@ -83,36 +83,12 @@ doctor:
 	@printf '%s\n' '==> [doctor] Checking the Linux/WSL host without changing it'
 	@bash tools/doctor.sh
 
-test: test-unit test-integration test-elevation test-update-check test-self-update
-
-.PHONY: test-elevation
-test-elevation:
-	@bash tools/setup-native-dependencies.sh >/dev/null
-	@mkdir -p build/tests
-	@$(HOST_CXX) $(HOST_TEST_CXXFLAGS) -idirafter .deps/native/ps5-payload-sdk/target/include \
-		tests/test_elevation.cpp $(HOST_TEST_LDFLAGS) -o build/tests/test_elevation
-	@build/tests/test_elevation
-	@printf '%s\n' 'Resident/one-shot Lapy client, exchange, and proof checks passed.'
-
-test-update-check:
-	@mkdir -p build/tests
-	@$(HOST_CXX) $(HOST_TEST_CXXFLAGS) -g -fsanitize=address,undefined -fno-sanitize-recover=all \
-		tests/test_update_check.cpp $(HOST_TEST_LDFLAGS) -o build/tests/test_update_check
-	@build/tests/test_update_check
-	@printf '%s\n' 'Update-check version, parsing and decision checks passed.'
-test-self-update:
-	@mkdir -p build/tests/self-update
-	@for name in miniz miniz_tinfl miniz_tdef miniz_zip; do \
-		$(HOST_CC) -std=c11 -O2 -w -g -fsanitize=address,undefined \
-			-c third_party/miniz/$$name.c -o build/tests/self-update/$$name.o || exit 1; \
-	done
-	@$(HOST_CXX) $(HOST_TEST_CXXFLAGS) -g -fsanitize=address,undefined -fno-sanitize-recover=all \
-		-Ithird_party -Iexamples/self-update -Iexamples/update-check \
-		tests/test_self_update.cpp examples/self-update-helper/updater.cpp \
-		examples/self-update-helper/archive.cpp examples/self-update-helper/files.cpp \
-		build/tests/self-update/*.o -pthread $(HOST_TEST_LDFLAGS) -o build/tests/test_self_update
-	@build/tests/test_self_update
-	@printf '%s\n' 'Self-update check, download, staging, apply and refusal checks passed.'
+# The boilerplate also shipped test-elevation, test-update-check and
+# test-self-update. All three compiled sources from its examples/ tree, which is
+# not part of this project, so they could only ever fail here; they were removed
+# along with the example build targets. Upstream still has them:
+# https://github.com/blackbearreloaded/ps5-native-app-boilerplate
+test: test-unit test-integration
 
 test-deps:
 	@printf '%s\n' '==> [test-deps] Fetching the pinned host-only GoogleTest source'
@@ -173,49 +149,12 @@ packages: $(RUNTIME)
 	@printf '%s\n' '==> [packages] Building the app folder and both package formats'
 	@bash tools/build.sh All
 
-sandbox-elevation-example: $(RUNTIME)
-	@printf '%s\n' '==> [sandbox-elevation] Building the embedded upstream-Lapy proof folder and ZIP'
-	@APP_SOURCE_DIR=examples/sandbox-elevation/src \
-		APP_PARAM=examples/sandbox-elevation/sce_sys/param.json \
-		APP_SCE_SYS=sce_sys APP_ASSETS= APP_LAPY_HELPER=1 \
-		bash tools/build.sh Folder
-
-sandbox-elevation-ffpfsc: $(RUNTIME)
-	@printf '%s\n' '==> [sandbox-elevation] Building the embedded upstream-Lapy proof image'
-	@APP_SOURCE_DIR=examples/sandbox-elevation/src \
-		APP_PARAM=examples/sandbox-elevation/sce_sys/param.json \
-		APP_SCE_SYS=sce_sys APP_ASSETS= APP_LAPY_HELPER=1 \
-		bash tools/build.sh Ffpfsc
-
-update-check-example: $(RUNTIME)
-	@printf '%s\n' '==> [update-check] Building the catalog update-check example title'
-	@APP_SOURCE_DIR=examples/update-check \
-		APP_PARAM=examples/update-check/sce_sys/param.json \
-		APP_SCE_SYS=sce_sys APP_ASSETS=examples/update-check/assets \
-		PACBREW_PACKAGES="libcurl $(PACBREW_PACKAGES)" \
-		APP_WRAP_SYMBOLS="fcntl $(APP_WRAP_SYMBOLS)" \
-		bash tools/build.sh Folder
-
-SELF_UPDATE_HELPER := build/self-update/self-updater.elf
-
-self-update-helper:
-	@printf '%s\n' '==> [self-update] Building the helper for the payload loader'
-	@bash tools/setup-native-dependencies.sh >/dev/null
-	@$(MAKE) --no-print-directory -s -C examples/self-update-helper \
-		PS5_PAYLOAD_SDK="$(CURDIR)/.deps/native/ps5-payload-sdk" \
-		OUTPUT="$(CURDIR)/$(SELF_UPDATE_HELPER)"
-	@python3 tools/validate-loader-elf.py "$(SELF_UPDATE_HELPER)"
-
-self-update-example: $(RUNTIME) self-update-helper
-	@printf '%s\n' '==> [self-update] Building the self-update example title'
-	@APP_SOURCE_DIR=examples/self-update \
-		APP_PARAM=examples/self-update/sce_sys/param.json \
-		APP_SCE_SYS=sce_sys APP_ASSETS=examples/self-update/assets \
-		APP_INCLUDE_PATHS="examples/update-check $(APP_INCLUDE_PATHS)" \
-		PACBREW_PACKAGES="libcurl $(PACBREW_PACKAGES)" \
-		APP_WRAP_SYMBOLS="fcntl $(APP_WRAP_SYMBOLS)" \
-		APP_ROOT_FILES="$(SELF_UPDATE_HELPER) $(APP_ROOT_FILES)" \
-		bash tools/build.sh Folder
+# The boilerplate's sandbox-elevation, update-check and self-update example
+# titles built from its examples/ tree, which this project does not carry, so
+# those targets were removed too. tools/build-lapy-helper.py (elevation) and
+# tools/validate-loader-elf.py (payload-loader ELF check) are kept: build.sh
+# still uses the first when APP_LAPY_HELPER=1, and the second is the sanity
+# check any future installer or updater helper would want.
 
 deploy:
 	@printf '%s\n' '==> [deploy] Building and publishing the selected app output over FTP'
@@ -261,6 +200,7 @@ help:
 	  'make test-deps       Fetch verified host-only GoogleTest source' \
 	  'make test-unit       Run host-native GoogleTest application tests' \
 	  'make test-integration  Run host tooling integration tests' \
+	  'tools/set-content-version.sh v1.2.3   Stamp param.json contentVersion (CI does this on a tag)' \
 	  'make deps            Fetch native dependencies into .deps/' \
 	  'make pacbrew         Fetch the pinned PacBrew ports sysroot' \
 	  'make pacbrew-list    List PacBrew pkg-config module names' \
@@ -274,11 +214,6 @@ help:
 	  'make ffpkg           Build the folder and UFS2 .ffpkg image' \
 	  'make ffpfsc          Switched off for now; ENABLE_FFPFSC=1 builds the .ffpfsc image' \
 	  'make packages        Build folder and .ffpkg (and .ffpfsc with ENABLE_FFPFSC=1)' \
-	  'make sandbox-elevation-example  Build the official-Lapy client proof folder and ZIP' \
-	  'make update-check-example  Build the catalog update-check example title' \
-	  'make test-update-check     Run the update-check host tests' \
-	  'make self-update-example   Build the self-update example title and its helper' \
-	  'make test-self-update      Run the self-update host tests' \
 	  'make deploy PS5_HOST=<address>  Build and FTP-deploy the app folder' \
 	  'make undeploy PS5_HOST=<address>  Remove this title from /data/homebrew' \
 	  'Build variables:     APP_DEFINITIONS, APP_INCLUDE_PATHS, APP_STATIC_ARCHIVES, APP_RUNTIME_MODULES, APP_WRAP_SYMBOLS, APP_LAPY_HELPER' \

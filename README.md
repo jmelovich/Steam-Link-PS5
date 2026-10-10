@@ -12,6 +12,10 @@ Unofficial and not affiliated with Valve or Sony.
 PC running Steam  ──►  LAN  ──►  PS5 homebrew app  ──►  your TV
 ```
 
+### Demo
+
+[![Steam Remote Play running on a PS5 — video demo](https://img.youtube.com/vi/-9CHqKcT_ec/maxresdefault.jpg)](https://youtu.be/-9CHqKcT_ec)
+
 ## What works
 
 Tested on a PS5 **CFI-2015, firmware 13.20**, with etaHEN and ShadowMount+ 1.7beta4.
@@ -160,12 +164,24 @@ PS5_HOST=192.168.x.x tools/relaunch.sh
 The console writes `/data/steamlink-ps5/log.txt`, readable over FTP, and mirrors it to the
 kernel log.
 
-`.github/workflows/build.yml` runs the same build on every push, and pushing a `v*` tag
-builds the ZIP and opens a draft release with it attached:
+### Releases
+
+`.github/workflows/build.yml` runs the same build on every push, and **pushing a `v*` tag is
+what makes a release**:
 
 ```bash
-git tag -a v0.1.0 -m "First public build" && git push origin v0.1.0
+git tag -a v1.0.0 -m "First public build"
+git push origin v1.0.0
 ```
+
+That builds the ZIP and opens a **draft** release with it attached, which you then review and
+publish from the Releases page. Nothing else triggers a release — ordinary commits only build.
+
+The tag is the single source of truth for the version: a tag build stamps
+`sce_sys/param.json`'s `contentVersion` from it via `tools/set-content-version.sh`, mapping
+`vMAJOR.MINOR.PATCH` to the PS5's `NN.NNN.NNN` form (`v1.2.3` → `01.002.003`). The file in the
+repository keeps a fixed baseline; only the built artifact is stamped. This matters because
+stores and updaters decide "is there a new version?" from `contentVersion`, not from the tag.
 
 ## How it works
 

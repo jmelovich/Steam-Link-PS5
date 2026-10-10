@@ -25,9 +25,20 @@ for file in "${repository_files[@]}"; do
             ;;
         *.c|*.cc|*.cpp|*.h|*.hpp|*.ld|*.py|*.ps1|*.sh|*.yml|*.yaml|Makefile|.clang-format|.clang-tidy|.env.example)
             header=$(head -n 20 "$file")
-            grep -Fq ps5-native-app-boilerplate <<<"$header"
-            grep -Fq 'Copyright (C) 2026 BlackBearReloaded' <<<"$header"
-            grep -Fq 'SPDX-License-Identifier: GPL-3.0-or-later' <<<"$header"
+            # Upstream demanded the boilerplate's name and BlackBearReloaded's
+            # copyright in every header. In a derived project that is false
+            # attribution for the files this project wrote, so accept either
+            # banner: inherited files keep theirs, ours carry ours. The licence
+            # is the part that is non-negotiable, and it stays required.
+            if ! grep -Fq 'SPDX-License-Identifier: GPL-3.0-or-later' <<<"$header"; then
+                echo "missing SPDX-License-Identifier: GPL-3.0-or-later: $file" >&2
+                exit 2
+            fi
+            if ! grep -Fq ps5-native-app-boilerplate <<<"$header" \
+                && ! grep -Fq Steam-Link-PS5 <<<"$header"; then
+                echo "header names neither this project nor the boilerplate: $file" >&2
+                exit 2
+            fi
             ((checked += 1))
             ;;
         *.cs|*.csproj)
