@@ -272,6 +272,41 @@ void draw_stream(ps5::demo::Canvas &canvas) noexcept
     if (slp::video::latest(frame))
     {
         status.have_picture = true;
+        // (diag) presentation cadence: at 60 Hz vsync, how many vblanks show a NEW decoded
+        // frame vs repeat the last one (a judder stall) vs skip past 2+ (arrival clumped).
+        // Smooth 60 fps = ~60 new/s, 0 repeat, 0 skip. repeats+skips/s is the judder rate.
+        {
+            static std::uint64_t d_t0 = 0, d_last = 0, d_vbl = 0, d_new = 0, d_rep = 0, d_skip = 0, d_drop = 0;
+            const std::uint64_t t = now_ms();
+            if (d_t0 == 0)
+                d_t0 = t;
+            ++d_vbl;
+            if (d_last != 0)
+            {
+                const std::uint64_t delta = frame.serial - d_last;
+                if (delta == 0)
+                    ++d_rep;
+                else
+                {
+                    ++d_new;
+                    if (delta >= 2)
+                    {
+                        ++d_skip;
+                        d_drop += delta - 1;
+                    }
+                }
+            }
+            d_last = frame.serial;
+            if (t - d_t0 >= 1000)
+            {
+                slp::log("present: %llu vbl/s new=%llu repeat=%llu skip=%llu dropped=%llu",
+                         static_cast<unsigned long long>(d_vbl), static_cast<unsigned long long>(d_new),
+                         static_cast<unsigned long long>(d_rep), static_cast<unsigned long long>(d_skip),
+                         static_cast<unsigned long long>(d_drop));
+                d_t0 = t;
+                d_vbl = d_new = d_rep = d_skip = d_drop = 0;
+            }
+        }
         // Scale the decoded frame to fill 1920x1080, preserving aspect (letterbox).
         // The host streams at its own aspect (e.g. 1280x536), so a 1:1 copy would
         // leave most of the screen black; scaling makes any resolution fill.
@@ -633,6 +668,38 @@ IHS_StreamVideoSubmitResult on_video_submit(IHS_Session *session, IHS_Buffer *da
 {
     status.video_frames.fetch_add(1);
     status.video_bytes.fetch_add(data->size);
+    // (diag) arrival jitter: gap between consecutive decoded-frame deliveries. At 60 fps
+    // the ideal is a steady ~16-17 ms. Bin per second: on-time (<=20ms), late (20-33ms, a
+    // missed vblank), hitch (>33ms). A steady source shows almost all on-time; many late/
+    // hitch = network arrival jitter, which with no buffer becomes visible judder.
+    {
+        static std::uint64_t a_t0 = 0, a_last = 0, a_on = 0, a_late = 0, a_hitch = 0, a_max = 0;
+        const std::uint64_t t = now_ms();
+        if (a_t0 == 0)
+            a_t0 = t;
+        if (a_last != 0)
+        {
+            const std::uint64_t gap = t - a_last;
+            if (gap > a_max)
+                a_max = gap;
+            if (gap <= 20)
+                ++a_on;
+            else if (gap <= 33)
+                ++a_late;
+            else
+                ++a_hitch;
+        }
+        a_last = t;
+        if (t - a_t0 >= 1000)
+        {
+            slp::log("arrival: on_time=%llu late=%llu hitch=%llu maxgap=%llums",
+                     static_cast<unsigned long long>(a_on), static_cast<unsigned long long>(a_late),
+                     static_cast<unsigned long long>(a_hitch), static_cast<unsigned long long>(a_max));
+            a_t0 = t;
+            a_on = a_late = a_hitch = 0;
+            a_max = 0;
+        }
+    }
     const bool keyframe = (flags & IHS_StreamVideoFrameKeyFrame) != 0;
     const std::uint16_t frame_id = IHS_SessionLastSubmittedVideoFrameId(session);
     const std::uint64_t started = now_ms();
@@ -698,7 +765,12 @@ void on_session_configuring(IHS_Session *, IHS_SessionConfig *config, void *)
     const slp::Settings &settings = slp::settings();
     config->enableAudio = true;
     config->enableHevc = settings.hevc;
-    config->maxBitrateKbps = static_cast<std::int32_t>(settings.bitrate_kbps);
+    // "AUTO" (0) used to fall through to ihslib's hard-coded 30000 kbit/s (+90000 burst),
+    // which saturates a shared Wi-Fi link and causes periodic congestion loss bursts -> the
+    // multi-hundred-ms freezes. Measured on this link: 30 Mbit worst freeze 1415 ms, 10 Mbit
+    // 420 ms. Default AUTO to a sane 15 Mbit; the user can still pick an explicit cap.
+    config->maxBitrateKbps =
+        settings.bitrate_kbps != 0 ? static_cast<std::int32_t>(settings.bitrate_kbps) : 15000;
     config->quality = static_cast<std::int32_t>(settings.quality);
     config->maxResolutionY = static_cast<std::int32_t>(settings.max_height);
     config->maxResolutionX = settings.max_height <= 720 ? 1280 : 1920;
