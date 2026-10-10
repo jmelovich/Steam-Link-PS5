@@ -24,16 +24,23 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Pinned, NOT ubuntu-latest. This toolchain targets Clang 18
+    # (tooling/prospero-clang18; tools/doctor.sh prefers the -18 binaries), and
+    # 24.04 is the newest image that ships it: 24.04 carries Clang 16/17/18,
+    # while 26.04 carries only 20/21/22. The ubuntu-latest label began moving to
+    # 26.04 on 2026-10-19, which would have swapped the compiler out from under
+    # the build without touching this file. Bump deliberately, with a test run.
+    runs-on: ubuntu-24.04
     outputs:
       title-id: ${{ steps.identity.outputs.title-id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
-      # tools/doctor.sh lists what the build needs. Ubuntu runners ship clang,
-      # llvm and python3; ninja is the one that has to be installed.
+      # tools/doctor.sh lists what the build needs. The 24.04 image already has
+      # clang/llvm/python3/ninja; installing them anyway keeps the dependency
+      # explicit and survives image changes.
       - name: Install host tools
         run: |
           sudo apt-get update
@@ -44,7 +51,7 @@ jobs:
       # and a zlib tarball, both SHA-256 verified. Pure downloads, so caching
       # them cannot go stale: the key covers the script that pins the hashes.
       - name: Cache the payload SDK
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .deps/native
           key: native-deps-${{ runner.os }}-${{ hashFiles('tools/setup-native-dependencies.sh') }}
@@ -64,7 +71,7 @@ jobs:
           echo "title-id=$title_id" >> "$GITHUB_OUTPUT"
           ls -l "dist/$title_id.zip"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.identity.outputs.title-id }}
           path: dist/${{ steps.identity.outputs.title-id }}.zip
@@ -73,15 +80,15 @@ jobs:
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # pinned for the same reason as the build job
     permissions:
-      contents: write
+      contents: write # overrides the repo's read-only default; verified working
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # git describe needs the tag history for the compare link
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.build.outputs.title-id }}
           path: dist
