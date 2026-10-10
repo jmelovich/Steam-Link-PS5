@@ -163,7 +163,8 @@ void launcher_input()
         const bool backward = slp::hid::pressed(now.left, before.left);
         if (forward || backward)
         {
-            static const std::uint32_t bitrates[] = {0, 2000, 3000, 5000, 10000, 15000, 20000, 30000}; // 0 = AUTO
+            static const std::uint32_t bitrates[] = {0,     5000,  10000, 15000, 20000,
+                                                     30000, 50000, 100000}; // 0 = AUTO (100 Mbit cap)
             constexpr int bitrate_count = 8;
             switch (status.settings_cursor)
             {
@@ -393,7 +394,7 @@ void draw_settings(ps5::demo::Canvas &canvas) noexcept
     const slp::Settings &settings = slp::settings();
     char bitrate[32];
     if (settings.bitrate_kbps == 0)
-        std::snprintf(bitrate, sizeof bitrate, "AUTO (STEAM SETTING)");
+        std::snprintf(bitrate, sizeof bitrate, "AUTO (STEAM DECIDES)");
     else
         std::snprintf(bitrate, sizeof bitrate, "%u MBIT/S", settings.bitrate_kbps / 1000);
     char jitter[32];
@@ -773,15 +774,18 @@ void on_session_configuring(IHS_Session *, IHS_SessionConfig *config, void *)
     const slp::Settings &settings = slp::settings();
     config->enableAudio = true;
     config->enableHevc = settings.hevc;
-    // AUTO (0) leaves the host/Steam bandwidth setting in charge (ihslib's default cap).
-    // A lower client cap measured as WORSE in practice (coarser image, no fewer bursts),
-    // so do not cap below the user's choice; they raise it host-side when they want more.
-    config->maxBitrateKbps = static_cast<std::int32_t>(settings.bitrate_kbps);
+    // AUTO (0) means "let Steam's own Remote Play bandwidth setting decide": we advertise a
+    // cap high enough not to be the binding limit (ihslib's built-in default is only 30000,
+    // which measurably held the stream back). A LOWER client cap is worse in practice, so
+    // never cap below the user's choice.
+    config->maxBitrateKbps =
+        settings.bitrate_kbps != 0 ? static_cast<std::int32_t>(settings.bitrate_kbps) : 100000;
     config->quality = static_cast<std::int32_t>(settings.quality);
     config->maxResolutionY = static_cast<std::int32_t>(settings.max_height);
     config->maxResolutionX = settings.max_height <= 720 ? 1280 : 1920;
-    slp::log("session config: %dx%d, bitrate cap %u kbit/s, quality %u, hevc %d", config->maxResolutionX,
-             config->maxResolutionY, settings.bitrate_kbps, settings.quality, settings.hevc);
+    slp::log("session config: %dx%d, bitrate cap %d kbit/s (%s), quality %u, hevc %d", config->maxResolutionX,
+             config->maxResolutionY, config->maxBitrateKbps, settings.bitrate_kbps ? "explicit" : "AUTO",
+             settings.quality, settings.hevc);
 }
 
 void on_session_connected(IHS_Session *session, void *)
