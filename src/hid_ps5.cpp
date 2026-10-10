@@ -1,5 +1,5 @@
 /*
- * steamlink-ps5 - ScePad HID provider for ihslib. See hid_ps5.hpp.
+ * Steam-Link-PS5 - ScePad HID provider for ihslib. See hid_ps5.hpp.
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * Modelled on ihslib's SDL provider (src/hid/sdl, LGPL-3.0): same wire report, same

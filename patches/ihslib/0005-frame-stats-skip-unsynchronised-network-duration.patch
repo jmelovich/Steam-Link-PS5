@@ -1,4 +1,4 @@
-From: steamlink-ps5
+From: Steam-Link-PS5
 Subject: frame stats: do not report a network duration across unsynchronised clocks
 
 The aggregator folds "frame send" (host clock) minus "frame receive" (local

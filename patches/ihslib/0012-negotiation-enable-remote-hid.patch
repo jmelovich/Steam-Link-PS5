@@ -1,4 +1,4 @@
-From: steamlink-ps5
+From: Steam-Link-PS5
 Subject: negotiation: advertise remote HID so the host injects controller input
 
 The client config set enable_remote_hid = 0, telling the host the client does

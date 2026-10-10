@@ -1,5 +1,5 @@
 /*
- * steamlink-ps5 - A real malloc heap for the title, backed by direct memory.
+ * Steam-Link-PS5 - A real malloc heap for the title, backed by direct memory.
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * The system libc's default heap is a few MiB; a video stream needs far more,

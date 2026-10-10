@@ -1,4 +1,4 @@
-From: steamlink-ps5
+From: Steam-Link-PS5
 Subject: window: resync instead of freezing when the host races beyond the window
 
 IHS_SessionPacketsWindowAdd ignored any packet whose id was more than a whole

@@ -1,5 +1,5 @@
 /*
- * steamlink-ps5 - DualSense controllers as Steam Remote Play HID devices.
+ * Steam-Link-PS5 - DualSense controllers as Steam Remote Play HID devices.
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * An ihslib HID provider over ScePad: every signed-in user's controller is one

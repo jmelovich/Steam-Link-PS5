@@ -1,5 +1,5 @@
 /*
- * steamlink-ps5 - VideoDec2 decode + CPU NV12->RGBA. See video.hpp.
+ * Steam-Link-PS5 - VideoDec2 decode + CPU NV12->RGBA. See video.hpp.
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * The decoder setup follows ProsperoLight's proven sequence (GPL-3.0-or-later):

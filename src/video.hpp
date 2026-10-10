@@ -1,5 +1,5 @@
 /*
- * steamlink-ps5 - Hardware video: VideoDec2 decode, then a CPU NV12->RGBA convert
+ * Steam-Link-PS5 - Hardware video: VideoDec2 decode, then a CPU NV12->RGBA convert
  * into a frame the text/VideoOut path can show.
  * SPDX-License-Identifier: GPL-3.0-or-later
  *

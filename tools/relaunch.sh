@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# steamlink-ps5 - The edit-deploy-test loop in one command.
+# Steam-Link-PS5 - The edit-deploy-test loop in one command.
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 #   PS5_HOST=192.168.x.x tools/relaunch.sh [--no-build]

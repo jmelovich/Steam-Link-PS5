@@ -1,4 +1,4 @@
-From: steamlink-ps5
+From: Steam-Link-PS5
 Subject: video: don't freeze on a stalled partial frame either (patch 0019)
 
 Follow-up to 0018 after the user reported the stutter was no better. Per-frame

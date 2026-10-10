@@ -1,5 +1,5 @@
 /*
- * steamlink-ps5 - pthread backend for ihslib's thread abstraction.
+ * Steam-Link-PS5 - pthread backend for ihslib's thread abstraction.
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * ihslib ships an SDL2 backend; the PS5 has no SDL. Mutexes are recursive to

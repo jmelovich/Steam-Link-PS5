@@ -1,4 +1,4 @@
-From: steamlink-ps5
+From: Steam-Link-PS5
 Subject: hid: clamp report length instead of aborting the title
 
 IHS_HIDReportHolderAddFull asserted holder->reportLength >= len. The host sets

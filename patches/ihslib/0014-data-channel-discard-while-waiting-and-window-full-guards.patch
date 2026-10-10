@@ -1,4 +1,4 @@
-From: steamlink-ps5
+From: Steam-Link-PS5
 Subject: data channel: skip a lost packet while waiting; never let the window fill completely
 
 A single lost packet while the worker is idle (the normal state when the

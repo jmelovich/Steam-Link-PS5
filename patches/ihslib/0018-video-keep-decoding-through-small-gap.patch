@@ -1,4 +1,4 @@
-From: steamlink-ps5
+From: Steam-Link-PS5
 Subject: video: keep decoding through a small frame gap instead of freezing
 
 The remaining "borderline unplayable" stutter on a good link. A whole-path audit

@@ -99,14 +99,24 @@ Press Options on the launcher for settings:
 
 ## Building
 
-Linux or WSL, with `git`, `make`, `python3` and `curl`.
+Linux or WSL. On Debian or Ubuntu:
 
 ```bash
-git clone --recursive https://github.com/<you>/steamlink-ps5
-cd steamlink-ps5
+sudo apt install git make ninja-build clang clang-format clang-tidy llvm lld \
+                 python3 wget unzip tar
+```
+
+```bash
+git clone --recursive https://github.com/<you>/Steam-Link-PS5
+cd Steam-Link-PS5
 make doctor     # checks the host for what the build needs; changes nothing
 make            # fetches the PS5 payload SDK on first run, then builds
 ```
+
+`make doctor` names anything missing. The first build downloads the public
+[PS5 payload SDK](https://github.com/ps5-payload-dev/sdk) and a zlib tarball into `.deps/`,
+both SHA-256 verified, then cross-builds ihslib, protobuf-c, Mbed-TLS and Opus from the
+pinned submodules.
 
 Output is `dist/PPSA99350/` plus `dist/PPSA99350.zip` — the same layout as a release.
 
@@ -125,6 +135,13 @@ PS5_HOST=192.168.x.x tools/relaunch.sh
 
 The console writes `/data/steamlink-ps5/log.txt`, readable over FTP, and mirrors it to the
 kernel log.
+
+`.github/workflows/build.yml` runs the same build on every push, and pushing a `v*` tag
+builds the ZIP and opens a draft release with it attached:
+
+```bash
+git tag -a v0.1.0 -m "First public build" && git push origin v0.1.0
+```
 
 ## How it works
 
@@ -153,3 +170,40 @@ GPL-3.0-or-later for this repository's own code — see [LICENSE](LICENSE) and
 app is generated from the clean-room source in `runtime/`.
 
 No Sony SDK, firmware or keys, and no Valve code, are included or required.
+
+One exception to the licence above: `sce_sys/icon0.png` is the Steam Link logo, Valve's
+trademark, used only to show which service the app connects to. It is not this project's to
+relicense — replace it if you redistribute a modified build.
+
+## Disclaimer
+
+This is an unofficial, community-built project. It is **not affiliated with, endorsed by,
+sponsored by, or supported by Valve Corporation or Sony Interactive Entertainment**, and
+neither company has any involvement in it. Do not report problems with this app to either of
+them.
+
+**No proprietary or licensed code is used.** Nothing here is derived from, copied out of, or
+linked against Valve or Sony source code, SDKs, system libraries, firmware images, or signing
+keys, and none of those are included in a release or needed to build one:
+
+- The Remote Play protocol comes from [ihslib](https://github.com/mariotaku/ihslib), an
+  independent clean-room implementation of a protocol Valve has never published. It talks to
+  Steam the way any third-party client does, over the network.
+- The PS5 side builds against the community-maintained, publicly available
+  [ps5-payload-dev SDK](https://github.com/ps5-payload-dev/sdk) — header definitions and
+  linker stubs for system calls, written by the homebrew community, not Sony's SDK.
+- `sce_module/libc.prx` is generated from the clean-room source in `runtime/`.
+- Everything else is either original work in this repository or third-party open-source code
+  used under its own licence, each one listed in
+  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+"Steam", "Steam Link" and "Steam Remote Play" are trademarks of Valve Corporation.
+"PlayStation", "PS5" and "DualSense" are trademarks of Sony Interactive Entertainment. They
+appear here only to describe, truthfully, what this software interoperates with; all marks
+remain the property of their respective owners.
+
+Running homebrew requires a modified console, which may void your warranty and is entirely at
+your own risk. This project is for use on hardware you own, with games you own. It is provided
+with no warranty of any kind — see sections 15 and 16 of the [LICENSE](LICENSE). It contains
+no piracy tooling and does not help you obtain, decrypt, or run software you have not paid
+for.

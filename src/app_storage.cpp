@@ -1,5 +1,5 @@
 /*
- * steamlink-ps5 - Data directory, log file and client identity.
+ * Steam-Link-PS5 - Data directory, log file and client identity.
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 

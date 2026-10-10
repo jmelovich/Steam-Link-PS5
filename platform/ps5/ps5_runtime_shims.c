@@ -1,5 +1,5 @@
 /*
- * steamlink-ps5 - libc entry points the title's runtime does not provide.
+ * Steam-Link-PS5 - libc entry points the title's runtime does not provide.
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * Third-party C code (ihslib, mbedtls) reaches these through libc macros; the

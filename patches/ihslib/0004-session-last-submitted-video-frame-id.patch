@@ -1,4 +1,4 @@
-From: steamlink-ps5
+From: Steam-Link-PS5
 Subject: session: expose the id of the video frame being submitted
 
 The submit callback carries no frame id, so an application cannot call

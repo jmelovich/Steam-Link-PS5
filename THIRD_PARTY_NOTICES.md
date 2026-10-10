@@ -18,6 +18,38 @@
 | [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus) | Directory-style deployment and hardware validation |
 | [ArkSama/PS5-Lapy-JB-Daemon](https://github.com/ArkSama/PS5-Lapy-JB-Daemon) | Original Lapy project and owned-root design |
 | [mpereiraesaa/PS5-Lapy-JB-Daemon](https://github.com/mpereiraesaa/PS5-Lapy-JB-Daemon) | Exact-title one-shot helper and cooperative elevation protocol |
+| [mariotaku/ihslib](https://github.com/mariotaku/ihslib) | Clean-room Steam In-Home Streaming protocol implementation (LGPL-3.0) |
+| [scaronni/ihslib](https://github.com/scaronni/ihslib) | `auth` branch, current Steam pairing and authentication (LGPL-3.0) |
+| [protobuf-c](https://github.com/protobuf-c/protobuf-c) | Protocol Buffers runtime for the ihslib wire format (BSD-2-Clause) |
+| [Mbed-TLS](https://github.com/Mbed-TLS/mbedtls) | AES-CBC, HMAC-SHA and RSA for the session crypto (Apache-2.0) |
+| [Opus](https://opus-codec.org/) | Audio decoder (BSD-3-Clause) |
+| [TLSF](http://tlsf.baisoku.org) | Two-Level Segregated Fit allocator behind the title's heap (BSD-3-Clause) |
+
+## Streaming dependencies
+
+The Steam Remote Play client is built on
+[ihslib](https://github.com/mariotaku/ihslib) by Mariotaku, a clean-room
+implementation of Steam's In-Home Streaming protocol, taken from the `auth`
+branch of [scaronni's fork](https://github.com/scaronni/ihslib) for current
+pairing support. ihslib is LGPL-3.0; it is built from source as a static
+archive, and every change this project makes to it is published as a readable
+patch in `patches/ihslib/`, documented one by one in [PINS.md](PINS.md), so the
+library can be relinked or replaced independently. No Valve code, protocol
+documentation, or asset is used, and none is included.
+
+| Component | Licence | How it is used |
+| --- | --- | --- |
+| [ihslib](https://github.com/mariotaku/ihslib) | LGPL-3.0 | Discovery, pairing, session and channel protocol; built from a patched source copy |
+| [protobuf-c](https://github.com/protobuf-c/protobuf-c) | BSD-2-Clause | Protocol Buffers runtime ihslib's messages require |
+| [Mbed-TLS](https://github.com/Mbed-TLS/mbedtls) | Apache-2.0 (dual Apache-2.0 OR GPL-2.0-or-later; taken under Apache-2.0) | Session crypto: AES-CBC, HMAC-SHA, RSA |
+| [Opus](https://opus-codec.org/) | BSD-3-Clause | Decoding the audio stream |
+| [TLSF 3.1](http://tlsf.baisoku.org) | BSD-3-Clause | Copyright (c) 2006-2016 Matthew Conte; vendored unmodified in `third_party/tlsf/` and used by `platform/ps5/ps5_malloc.c` |
+
+Each is fetched as a pinned git submodule (TLSF excepted, which is vendored),
+cross-compiled from source, and statically linked. Each retains its own licence,
+reproduced in its own source tree. Video decoding uses the console's own
+VideoDec2 system module through the public SDK's stubs; no decoder library is
+bundled.
 
 ## Native build dependencies
 
@@ -136,11 +168,19 @@ Original ps5-native-app-boilerplate code is Copyright (C) 2026
 BlackBearReloaded and licensed under GPL-3.0-or-later. Source and script files
 carry matching SPDX identifiers.
 
-## Original presentation assets
+## Assets
 
-The BlackBear icon, selection artwork, and default selection track
-`sce_sys/snd0.at9` are original assets supplied by BlackBearReloaded, Copyright
-(C) 2026 BlackBearReloaded, and distributed under GPL-3.0-or-later. The track
-is titled `Night Drive`.
+This project ships no boilerplate presentation assets: the BlackBear icon,
+selection artwork, and the `Night Drive` selection track (`sce_sys/snd0.at9`)
+supplied with ps5-native-app-boilerplate are not included here.
+
+`assets/testpattern.h264` and `assets/banner.txt` are original to this project,
+Copyright (C) 2026 the Steam-Link-PS5 contributors, GPL-3.0-or-later.
+
+`sce_sys/icon0.png` is the Steam Link logo, a trademark of Valve Corporation. It
+is **not** covered by this repository's licence; it is used only to identify, to
+the person holding the controller, which service the app connects to. Valve
+retains all rights to it. Anyone redistributing a modified build should replace
+it with their own artwork.
 
 No proprietary runtime module, encryption key, or game file is included.

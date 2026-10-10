@@ -1,4 +1,4 @@
-From: steamlink-ps5
+From: Steam-Link-PS5
 Subject: session: let the application cap the bitrate and pick the quality preset
 
 The negotiation hard-codes Balanced at 30000 kbit/s with a 90000 burst, which

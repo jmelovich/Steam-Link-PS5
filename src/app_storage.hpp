@@ -1,5 +1,5 @@
 /*
- * steamlink-ps5 - Where the app keeps its files, and the client identity.
+ * Steam-Link-PS5 - Where the app keeps its files, and the client identity.
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 

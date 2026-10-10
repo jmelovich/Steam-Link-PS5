@@ -1,4 +1,4 @@
-From: steamlink-ps5
+From: Steam-Link-PS5
 Subject: video: only request a keyframe on a forward sequence gap, drop resent frames
 
 The host re-sends old video frames (observed on a wired-PC link: ~43% of

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# steamlink-ps5 - Stop the title on the console (shsrv), if it is running.
+# Steam-Link-PS5 - Stop the title on the console (shsrv), if it is running.
 #   PS5_HOST=192.168.x.x tools/stop.sh
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)

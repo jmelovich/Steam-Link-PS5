@@ -1,4 +1,4 @@
-From: steamlink-ps5
+From: Steam-Link-PS5
 Subject: session: let the application cap the streaming resolution
 
 The negotiation hard-coded maximum_resolution_x/y = 0 and advertised a single

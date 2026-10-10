@@ -1,5 +1,5 @@
 /*
- * steamlink-ps5 - Opus -> sceAudioOut. See audio.hpp.
+ * Steam-Link-PS5 - Opus -> sceAudioOut. See audio.hpp.
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * sceAudioOutOutput() blocks until the previous grain has played, so a thread

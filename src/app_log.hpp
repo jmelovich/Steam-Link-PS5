@@ -1,5 +1,5 @@
 /*
- * steamlink-ps5 - Logging: a file under the data directory plus the kernel log.
+ * Steam-Link-PS5 - Logging: a file under the data directory plus the kernel log.
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 

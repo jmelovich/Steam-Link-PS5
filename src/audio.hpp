@@ -1,5 +1,5 @@
 /*
- * steamlink-ps5 - Stream audio: Opus packets in, sceAudioOut out.
+ * Steam-Link-PS5 - Stream audio: Opus packets in, sceAudioOut out.
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 

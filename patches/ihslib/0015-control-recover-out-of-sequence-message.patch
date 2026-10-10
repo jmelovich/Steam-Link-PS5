@@ -1,4 +1,4 @@
-From: steamlink-ps5
+From: Steam-Link-PS5
 Subject: control: deliver an out-of-sequence message instead of dropping it
 
 Intermittently the stream came up crippled: a black screen where Big Picture

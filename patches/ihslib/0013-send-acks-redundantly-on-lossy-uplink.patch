@@ -1,4 +1,4 @@
-From: steamlink-ps5
+From: Steam-Link-PS5
 Subject: channel: send ACKs several times so reliable control survives a lossy uplink
 
 On a weak Wi-Fi link the console's ACKs are lost on the way back to the host,

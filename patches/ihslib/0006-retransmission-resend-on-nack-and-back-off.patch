@@ -1,4 +1,4 @@
-From: steamlink-ps5
+From: Steam-Link-PS5
 Subject: retransmission: resend on NACK, back off instead of 21 sends in 200 ms
 
 A NACK from the host names a reliable packet it is missing, but the session

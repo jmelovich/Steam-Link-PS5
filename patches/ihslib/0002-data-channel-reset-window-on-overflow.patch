@@ -1,4 +1,4 @@
-From: steamlink-ps5
+From: Steam-Link-PS5
 Subject: session: reset a data channel's packet window when it overflows
 
 When a loss burst leaves the window full of a partially received frame,

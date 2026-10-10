@@ -1,0 +1,109 @@
+name: build
+
+# Builds the app folder and its ZIP on every push and pull request, and - when a
+# v* tag is pushed - publishes that same ZIP as a GitHub release so nobody has to
+# build and upload one by hand.
+#
+#   git tag -a v0.1.0 -m "First public build" && git push origin v0.1.0
+#
+# The release is created as a draft: check the notes, then press Publish.
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      title-id: ${{ steps.identity.outputs.title-id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # tools/doctor.sh lists what the build needs. Ubuntu runners ship clang,
+      # llvm and python3; ninja is the one that has to be installed.
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build clang clang-format clang-tidy llvm lld wget unzip
+
+      # tools/setup-native-dependencies.sh downloads the public PS5 payload SDK
+      # and a zlib tarball, both SHA-256 verified. Pure downloads, so caching
+      # them cannot go stale: the key covers the script that pins the hashes.
+      - name: Cache the payload SDK
+        uses: actions/cache@v4
+        with:
+          path: .deps/native
+          key: native-deps-${{ runner.os }}-${{ hashFiles('tools/setup-native-dependencies.sh') }}
+
+      - name: Check the host has what the build needs
+        run: make doctor
+
+      # Fetches the SDK on first run, cross-builds ihslib/protobuf-c/mbedtls/opus
+      # into build/deps, then compiles, links, fake-signs and assembles the app.
+      - name: Build
+        run: make app
+
+      - name: Read the title id
+        id: identity
+        run: |
+          title_id=$(python3 -c 'import json;print(json.load(open("sce_sys/param.json"))["titleId"])')
+          echo "title-id=$title_id" >> "$GITHUB_OUTPUT"
+          ls -l "dist/$title_id.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.identity.outputs.title-id }}
+          path: dist/${{ steps.identity.outputs.title-id }}.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # git describe needs the tag history for the compare link
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.title-id }}
+          path: dist
+
+      - name: Publish a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ZIP: dist/${{ needs.build.outputs.title-id }}.zip
+        run: |
+          previous=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          {
+              printf 'Unpack `%s` into `/data/homebrew/` on the console, then launch\n' "$(basename "$ZIP")"
+              printf '**Steam Remote Play** from the home screen. Full instructions are in the\n'
+              printf '[README](https://github.com/%s#install).\n\n' "$GITHUB_REPOSITORY"
+              if [[ -n $previous ]]; then
+                  printf '**Changes**: https://github.com/%s/compare/%s...%s\n\n' \
+                      "$GITHUB_REPOSITORY" "$previous" "$GITHUB_REF_NAME"
+              fi
+              printf 'Unofficial. Not affiliated with Valve or Sony; contains no licensed code.\n'
+          } > notes.md
+          gh release create "$GITHUB_REF_NAME" \
+              --draft \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file notes.md \
+              "$ZIP" LICENSE THIRD_PARTY_NOTICES.md

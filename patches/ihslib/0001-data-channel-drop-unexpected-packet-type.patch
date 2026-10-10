@@ -1,4 +1,4 @@
-From: steamlink-ps5
+From: Steam-Link-PS5
 Subject: session: drop a data-channel packet of an unexpected type instead of asserting
 
 Over a lossy link a data channel occasionally receives a packet whose type is

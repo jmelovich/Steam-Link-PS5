@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# steamlink-ps5 - Cross-build the streaming dependencies once, into build/deps.
+# Steam-Link-PS5 - Cross-build the streaming dependencies once, into build/deps.
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Everything the app links besides its own sources: protobuf-c's runtime, mbedtls

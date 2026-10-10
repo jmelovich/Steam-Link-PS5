@@ -1,5 +1,5 @@
 /*
- * steamlink-ps5 - Steam Remote Play client for the PS5.
+ * Steam-Link-PS5 - Steam Remote Play client for the PS5.
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * The flow thread drives ihslib: discover PCs running Steam, pair with a PIN when

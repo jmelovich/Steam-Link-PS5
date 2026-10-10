@@ -112,7 +112,7 @@ ps5_network_metrics_t ps5_network_metrics_read(void)
     return result;
 }
 
-/* steamlink-ps5: a title's UDP socket defaults to a 42 KB receive buffer, about
+/* Steam-Link-PS5: a title's UDP socket defaults to a 42 KB receive buffer, about
  * 11 ms of a 30 Mbit/s video stream; sceNet clamps requests to 512 KB. Ask for
  * the maximum on every datagram socket so the stream library need not know. */
 static void ps5_socket_enlarge_buffers(int socket_id, int type)

@@ -1,4 +1,4 @@
-From: steamlink-ps5
+From: Steam-Link-PS5
 Subject: negotiation: advertise the client display's real refresh rate
 
 The negotiation hard-coded 59.94 Hz in both places the host consults - the

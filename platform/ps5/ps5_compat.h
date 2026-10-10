@@ -1,5 +1,5 @@
 /*
- * ps5-native-app-boilerplate - ProsperoLight component, trimmed for steamlink-ps5.
+ * ps5-native-app-boilerplate - ProsperoLight component, trimmed for Steam-Link-PS5.
  * Copyright (C) 2026 BlackBearReloaded
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
