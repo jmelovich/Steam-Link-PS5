@@ -7,7 +7,7 @@ commit the submodule change here together with a note below.
 
 | Component | Where | Revision | Why this one |
 | --- | --- | --- | --- |
-| [ihslib](https://github.com/scaronni/ihslib) branch `auth` | `third_party/ihslib` | `f68de5f0` (2026-10-04) | Upstream [mariotaku/ihslib](https://github.com/mariotaku/ihslib) master `1881b9a0` plus two commits implementing Steam's 2026 PIN-masked X25519 pairing (`crypto: add SHA-256, X25519 and Steam's key exchange`, `client: pair with the PIN-masked key exchange`). Without them current Steam answers `AuthorizationFailed` once the PIN is typed. Switch back to upstream once they are merged. `patches/ihslib/` carries two small robustness patches on top (see below). |
+| [ihslib](https://github.com/scaronni/ihslib) branch `auth` | `third_party/ihslib` | `f68de5f0` (2026-10-04) | Upstream [mariotaku/ihslib](https://github.com/mariotaku/ihslib) master `1881b9a0` plus two commits implementing Steam's 2026 PIN-masked X25519 pairing (`crypto: add SHA-256, X25519 and Steam's key exchange`, `client: pair with the PIN-masked key exchange`). Without them current Steam answers `AuthorizationFailed` once the PIN is typed. Switch back to upstream once they are merged. `patches/ihslib/` carries the patches listed below on top. |
 | [protobuf-c](https://github.com/protobuf-c/protobuf-c) | `third_party/protobuf-c` | v1.5.2 | ihslib's generated sources need ≥ 1.3.0; 1.5.2 is what they were regenerated with. |
 | [mbedtls](https://github.com/Mbed-TLS/mbedtls) | `third_party/mbedtls` | v3.6.4 | The revision ProsperoLight proved on the console; 4.x drops APIs ihslib uses (`mbedtls_md_hmac`). Built with `platform/ps5/mbedtls_ps5_config.h`. |
 | [opus](https://github.com/xiph/opus) | `third_party/opus` | v1.5.2 | Same as ProsperoLight. Intrinsics off (the SDK's toolchain has no runtime CPU dispatch we trust). |
@@ -66,5 +66,30 @@ commit the submodule change here together with a note below.
 - `0013-send-acks-redundantly-on-lossy-uplink.patch`: send each ACK three times so reliable
   control handshakes (start input reports, keyframe/config delivery) survive a lossy uplink
   where single ACKs are lost and the host otherwise gives up.
+- `0015-control-recover-out-of-sequence-message.patch`: a control message whose encryption
+  counter skipped ahead was thrown away even though it had already decrypted and passed its
+  HMAC. Losing one such message cost either "start input reports" (the pad connects but sends
+  no input) or a stream-start message (a black screen), at random, on roughly 1 in 12 startups.
+  Resync the counter *and* deliver the message - a forward skip can never be a replay.
+- `0016-control-window-hold-the-startup-burst.patch`: the control frame window held 128 slots,
+  too few for Steam's Big Picture startup burst while one lost reliable packet healed, so it
+  overflowed and disconnected before the video channel opened. Raised to 2048; the host's
+  resend then drains the backlog in order.
+- `0018-video-keep-decoding-through-small-gap.patch`: any forward frame-sequence gap - even a
+  single frame - requested a keyframe and then dropped *every* frame until a full IDR arrived.
+  On a good link that fired about once a second, each time freezing the picture for the
+  keyframe round trip. Now a small gap asks for a keyframe once (coalesced, backed off from a
+  flat 200 ms to 500 ms) and keeps decoding, so a one-frame loss is a brief artifact the next
+  keyframe wipes rather than a freeze. Only a large desync still hard-waits; the decoder's own
+  reset path remains the backstop.
+- `0019-video-soft-partial-stall.patch`: the same over-reaction on the other path - a frame
+  missing a fragment hard-waited for a keyframe, measured at 200-640 ms per event. Drop the
+  stuck partials, ask once, keep decoding.
+- `0020-negotiation-advertise-display-refresh.patch`: the negotiation hard-coded 59.94 Hz as
+  both the available video mode's refresh and the client's maximum framerate, so a user who
+  chose 120 Hz in Steam's Remote Play settings was silently vetoed (the host streams at the
+  lower of the two) and the resulting disagreement showed up as doubled latency and artifacts.
+  `IHS_SessionConfig` gains `refreshRateNum/Den`; the app measures its real refresh rate and
+  advertises that, leaving the host's settings in charge.
 
 All are candidates for upstream.
