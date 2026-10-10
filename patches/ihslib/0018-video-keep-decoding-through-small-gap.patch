@@ -1,0 +1,158 @@
+From: steamlink-ps5
+Subject: video: keep decoding through a small frame gap instead of freezing
+
+The remaining "borderline unplayable" stutter on a good link. A whole-path audit
+(and two adversarial verifications) traced it to one over-reaction in the video
+data channel: DataReceived treated ANY forward frame-sequence gap - even a single
+frame - as a reason to request a keyframe, set waitingKeyFrame, and then DROP every
+arriving frame until a complete IDR round-tripped. At 60fps that is tens-to-hundreds
+of ms of frozen last-frame, and on a good link a 1-3 frame gap (a single lost/late
+packet or reorder) fired ~0.7 times/second - a visible mini-freeze about once a
+second. The decoder was never the problem (slow submits = 0 all session) and the
+packet window stayed healthy (far=0, ovf=0), so patch 0014's wedge fix is intact;
+this is purely the drop-until-keyframe recovery policy being far too aggressive.
+
+There is no negotiable keyframe-interval / loss-tolerance field in the protocol
+(confirmed: none in remoteplay.proto), so the policy must change in code:
+
+- A small forward gap (<= SOFT_GAP_MAX frames) now asks for a keyframe ONCE to heal
+  cleanly, but KEEPS DECODING. A one-frame blip becomes a brief artifact the next
+  keyframe wipes, not a multi-frame freeze. The decoder is the backstop: a frame that
+  genuinely can't be decoded without its lost reference makes SubmitFrame return
+  ReportLost -> ApplyDecoderReset, which still hard-waits, so corruption cannot
+  persist. Only a LARGE desync (> SOFT_GAP_MAX) hard-waits for a clean keyframe up
+  front, as before.
+
+- The keyframe re-request is coalesced (one outstanding request at a time, tracked by
+  keyframeAskedAt) and backed off to KEYFRAME_REREQUEST_MS (500 ms) instead of the old
+  flat 200 ms. The 200 ms loop re-sent a full IDR several times a second up the weak
+  uplink during a stall, and when a large IDR fragment was itself lost the keyframe
+  never assembled and the loop re-fired - the amplifier behind the deepest frame-rate
+  dips. keyframeAskedAt is set wherever a keyframe is requested (gap, decrypt failure,
+  partial-overflow, decoder reset) and cleared when the keyframe arrives.
+
+Backward (resent/duplicate) sequences are still dropped silently, exactly as patch
+0010 established.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_014PYjQSBjAfPknHDEJuTGv5
+
+--- a/src/session/channels/video/ch_data_video.c
++++ b/src/session/channels/video/ch_data_video.c
+@@ -51,6 +51,7 @@
+         uint16_t lastFrameId;
+         uint16_t frameCounter;
+         uint64_t waitingKeyFrame;
++        uint64_t keyframeAskedAt;
+         uint64_t lastStatsTime;
+         bool frameStarted;
+         bool frameFinished;
+@@ -201,6 +202,15 @@
+                                          (const ProtobufCMessage *) &message);
+ }
+ 
++// A forward frame-sequence gap this size or smaller is recovered by continuing to decode
++// (a brief artifact the next keyframe wipes); a larger desync hard-waits for a clean
++// keyframe. ~0.5 s of frames at 60 fps.
++#define SOFT_GAP_MAX 30
++// Re-ask for an outstanding (asked-for but not-yet-arrived) keyframe no more than this
++// often, and only one at a time. The old path re-sent a full IDR every 200 ms, which
++// congested the uplink and, when a large IDR fragment was itself lost, deepened the stall.
++#define KEYFRAME_REREQUEST_MS 500
++
+ static void DataReceived(IHS_SessionChannel *channel, const IHS_SessionDataFrameHeader *header, IHS_Buffer *body) {
+     IHS_SessionChannelVideo *videoCh = (IHS_SessionChannelVideo *) channel;
+     IHS_VideoFrameHeader vhead;
+@@ -225,35 +235,50 @@
+     if (vhead.flags & VideoFrameFlagKeyFrame) {
+         DiscardPending(videoCh);
+         videoCh->states.waitingKeyFrame = 0;
++        videoCh->states.keyframeAskedAt = 0;
+         videoCh->states.expectedSequence = vhead.sequence;
+         IHS_SessionLog(channel->session, IHS_LogLevelDebug, "Video", "Coming keyframe");
+     }
+-    if (videoCh->states.waitingKeyFrame > 0) {
+-        // Wait for 200ms after requesting keyframe. Then request again.
++    /* A keyframe we asked for can itself be lost. Re-ask, but coalesced (one outstanding
++     * request at a time) and backed off to KEYFRAME_REREQUEST_MS instead of the old flat
++     * 200 ms: that loop re-sent a full IDR several times a second up the weak uplink during
++     * a stall, and a large IDR whose fragment was then lost never assembled, deepening it. */
++    if (videoCh->states.keyframeAskedAt > 0) {
+         uint64_t now = IHS_TimerNow();
+-        if (now - videoCh->states.waitingKeyFrame >= 200) {
+-            IHS_SessionLog(channel->session, IHS_LogLevelWarn, "Video", "Keyframe wait timeout, re-request keyframe");
++        if (now - videoCh->states.keyframeAskedAt >= KEYFRAME_REREQUEST_MS) {
++            IHS_SessionLog(channel->session, IHS_LogLevelWarn, "Video", "Keyframe still missing, re-request");
+             IHS_SessionChannelDataLost(channel);
+-            videoCh->states.waitingKeyFrame = IHS_TimerNow();
++            videoCh->states.keyframeAskedAt = now;
+         }
+-    } else {
+-        /* Only a FORWARD jump means frames were actually lost. A backward sequence is
+-         * an old frame the host re-sent (a duplicate); the original code treated it as
+-         * loss and asked for a keyframe, and each request made the host re-send more old
+-         * frames, so the sequence thrashed forwards and backwards and the client sat in
+-         * "wait for keyframe" for many seconds -> the long stalls. Drop resent/old frames
+-         * silently without touching our sequence tracking, and only request a keyframe on
+-         * a real forward gap. Sequence is a 16-bit wrapping counter, so compare signed. */
++    }
++    if (videoCh->states.waitingKeyFrame == 0) {
++        /* A backward sequence is an old frame the host re-sent (a duplicate): drop it
++         * silently without touching our tracking. A FORWARD jump means frames were lost.
++         * The original code hard-waited for a keyframe on ANY forward gap and then dropped
++         * EVERY frame until a full IDR arrived (the guard below) — a multi-frame freeze for
++         * a 1-frame blip, firing ~once a second on a good link: the "borderline unplayable"
++         * brief stutter. Instead ask for a keyframe once (to heal cleanly) but KEEP DECODING
++         * through a small gap, so it shows as a brief artifact the next keyframe wipes, not a
++         * freeze. The decoder is the backstop: a frame that genuinely can't be decoded without
++         * its lost reference makes SubmitFrame return ReportLost -> ApplyDecoderReset, which
++         * hard-waits, so corruption cannot persist. Only a LARGE desync hard-waits up front.
++         * Sequence is a 16-bit wrapping counter, so compare signed. */
+         int16_t seqDiff = (int16_t) (vhead.sequence - videoCh->states.expectedSequence);
+         if (seqDiff < 0) {
+             goto unlock;
+         }
+-        if (seqDiff > 0 && videoCh->states.waitingKeyFrame == 0) {
++        if (seqDiff > 0) {
++            bool big = seqDiff > SOFT_GAP_MAX;
+             IHS_SessionLog(channel->session, IHS_LogLevelWarn, "Video",
+-                           "Unexpected video frame sequence %u (expect %u), request keyframe", vhead.sequence,
+-                           videoCh->states.expectedSequence);
+-            IHS_SessionChannelDataLost(channel);
+-            videoCh->states.waitingKeyFrame = IHS_TimerNow();
++                           "Unexpected video frame sequence %u (expect %u), %s", vhead.sequence,
++                           videoCh->states.expectedSequence, big ? "wait keyframe" : "keep decoding");
++            if (videoCh->states.keyframeAskedAt == 0) {
++                IHS_SessionChannelDataLost(channel);
++                videoCh->states.keyframeAskedAt = IHS_TimerNow();
++            }
++            if (big) {
++                videoCh->states.waitingKeyFrame = IHS_TimerNow();
++            }
+         }
+     }
+     videoCh->states.expectedSequence = vhead.sequence + 1;
+@@ -277,6 +302,7 @@
+             IHS_BufferClear(&plain, true);
+             IHS_SessionChannelDataLost(channel);
+             videoCh->states.waitingKeyFrame = IHS_TimerNow();
++            videoCh->states.keyframeAskedAt = videoCh->states.waitingKeyFrame;
+             goto unlock;
+         }
+         plain.size = outLen;
+@@ -392,6 +418,7 @@
+                    "Partial frames stalled for %u ms, request keyframe", span * 1000 / 65536);
+     IHS_SessionChannelDataLost(channel);
+     videoCh->states.waitingKeyFrame = IHS_TimerNow();
++    videoCh->states.keyframeAskedAt = videoCh->states.waitingKeyFrame;
+ }
+ 
+ static void ApplyDecoderReset(IHS_SessionChannel *channel) {
+@@ -405,6 +432,7 @@
+     videoCh->states.frameFinished = false;
+     videoCh->states.frameStarted = false;
+     videoCh->states.waitingKeyFrame = IHS_TimerNow();
++    videoCh->states.keyframeAskedAt = videoCh->states.waitingKeyFrame;
+     // Second request of the pair. HandlePendingResets sends one once the reset completes, on top of
+     // the one FinalDecode @ 0x203844 already sent from the decoder thread; this is the one that
+     // arms the retry window above, so it must come after waitingKeyFrame is set.
