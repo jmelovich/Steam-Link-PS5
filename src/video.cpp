@@ -219,7 +219,6 @@ struct Decoder
     std::uint32_t vis_w = 0;
     std::uint32_t vis_h = 0;
     std::uint32_t jitter_target = 2;  // frames to buffer before display; 0 = present newest now
-    bool primed = false;              // reached the target depth at least once since last underflow
     std::uint32_t frame_width = 0;
     std::uint32_t frame_height = 0;
     std::uint64_t serial = 0;         // newest decoded serial
@@ -267,7 +266,6 @@ void release_all()
     g.present_h = 0;
     g.vis_w = 0;
     g.vis_h = 0;
-    g.primed = false;
 }
 
 // BT.601 limited-range NV12 -> RGBA8888 (Steam captures BT.601 limited). One
@@ -575,7 +573,6 @@ bool start(std::uint32_t width, std::uint32_t height, Codec codec, const std::ui
     g.presenting = -1;
     g.converting = -1;
     g.present_serial = 0;
-    g.primed = false;
     slp::log("video: jitter buffer %u frames (%d rgba buffers)", g.jitter_target, g.n_rgba);
     pool_start();
     g.serial = 0;
@@ -795,24 +792,21 @@ bool latest(Frame &out)
     }
     else
     {
-        // Paced jitter buffer: once the queue has filled to the target depth, release ONE
-        // frame per call (one per vblank). A late frame then draws from the buffer instead
-        // of repeating the last one, and a burst of early frames fills the buffer instead of
-        // being dropped -> even, judder-free motion. On underflow, hold the current frame and
-        // rebuild to the target before resuming.
-        if (!g.primed && g.fifo_count > static_cast<int>(g.jitter_target))
-            g.primed = true;
-        if (g.primed && g.fifo_count > 0)
+        // Paced jitter buffer: advance only while MORE than the target depth is queued, so
+        // the buffer keeps ~jitter_target frames in hand and the display advances at the rate
+        // frames actually arrive, whatever the vblank rate is. A late frame draws from the
+        // buffer instead of repeating the last one; a burst fills the buffer instead of being
+        // dropped. This also makes a source slower than the display correct for free: a 60 fps
+        // stream on a 120 Hz output simply holds each frame for two vblanks (frame doubling)
+        // instead of thrashing between hold-and-refill, which is what a "one frame per vblank"
+        // rule would have done.
+        if (g.fifo_count > static_cast<int>(g.jitter_target))
         {
             g.presenting = g.fifo[0];
             g.present_serial = g.fifo_serial[0];
             g.present_w = g.fifo_w[0];
             g.present_h = g.fifo_h[0];
             fifo_pop_front_locked();
-        }
-        else if (g.primed && g.fifo_count == 0)
-        {
-            g.primed = false; // underflow: hold the last frame, refill before resuming
         }
     }
     if (g.presenting < 0)
