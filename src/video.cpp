@@ -195,13 +195,29 @@ struct Decoder
     static constexpr int kMaxRgba = 8;
     std::uint32_t *rgba[kMaxRgba] = {};
     std::uint32_t rgba_capacity = 0;
+    // Buffers are sized to the DECODER's maximum, not the first frame's size, so the host
+    // raising the resolution mid-stream still fits (the picture is packed at its own width,
+    // so a smaller frame in a bigger buffer is fine).
+    std::uint32_t rgba_max_w = 0;
+    std::uint32_t rgba_max_h = 0;
     int n_rgba = 0;                   // buffers actually allocated (jitter_target + headroom)
     int fifo[kMaxRgba] = {};          // ready-frame buffer indices, oldest at [0]
     std::uint64_t fifo_serial[kMaxRgba] = {};
+    // Per-frame size: the queue can hold frames from before and after a resolution change.
+    std::uint32_t fifo_w[kMaxRgba] = {};
+    std::uint32_t fifo_h[kMaxRgba] = {};
     int fifo_count = 0;
     int presenting = -1;              // buffer currently on screen (held until the next pop)
     int converting = -1;              // buffer a decode is converting into (reserved, off-limits)
     std::uint64_t present_serial = 0; // serial currently presented (for the draw dedup)
+    std::uint32_t present_w = 0;      // size of the frame currently presented
+    std::uint32_t present_h = 0;
+    // Best-known VISIBLE size, from the negotiated video config. The decoder reports the
+    // CODED size (visible rounded up to the macroblock grid, e.g. 804 -> 816); we crop that
+    // padding back to this. Re-learned from the decoder if the host changes resolution
+    // mid-stream without ihslib re-issuing the config.
+    std::uint32_t vis_w = 0;
+    std::uint32_t vis_h = 0;
     std::uint32_t jitter_target = 2;  // frames to buffer before display; 0 = present newest now
     bool primed = false;              // reached the target depth at least once since last underflow
     std::uint32_t frame_width = 0;
@@ -240,11 +256,17 @@ void release_all()
         buffer = nullptr;
     }
     g.rgba_capacity = 0;
+    g.rgba_max_w = 0;
+    g.rgba_max_h = 0;
     g.n_rgba = 0;
     g.fifo_count = 0;
     g.presenting = -1;
     g.converting = -1;
     g.present_serial = 0;
+    g.present_w = 0;
+    g.present_h = 0;
+    g.vis_w = 0;
+    g.vis_h = 0;
     g.primed = false;
 }
 
@@ -527,9 +549,19 @@ bool start(std::uint32_t width, std::uint32_t height, Codec codec, const std::ui
     g.n_rgba = static_cast<int>(g.jitter_target) + 3;
     if (g.n_rgba > Decoder::kMaxRgba)
         g.n_rgba = Decoder::kMaxRgba;
+    // Size the buffers to the decoder's maximum, NOT this first frame. The host can raise the
+    // resolution mid-stream (launch a game at 1280x536, then switch the display to 1920x1080)
+    // without ihslib re-issuing the video-start config, and the decoder will then hand us a
+    // bigger picture. Sizing to the first frame meant such a frame had to be clamped, which
+    // showed as the top-left corner cropped and blown up. Each picture is packed at its own
+    // width, so a smaller frame living in a larger buffer costs nothing but the memory.
+    g.rgba_max_w = static_cast<std::uint32_t>(g.config.max_width);
+    g.rgba_max_h = static_cast<std::uint32_t>(g.config.max_height);
+    g.vis_w = width;
+    g.vis_h = height;
     g.frame_width = width;
     g.frame_height = height;
-    g.rgba_capacity = width * height;
+    g.rgba_capacity = g.rgba_max_w * g.rgba_max_h;
     for (int i = 0; i < g.n_rgba; ++i)
     {
         g.rgba[i] = static_cast<std::uint32_t *>(std::malloc(g.rgba_capacity * sizeof(std::uint32_t)));
@@ -583,6 +615,8 @@ void fifo_pop_front_locked()
     {
         g.fifo[j] = g.fifo[j + 1];
         g.fifo_serial[j] = g.fifo_serial[j + 1];
+        g.fifo_w[j] = g.fifo_w[j + 1];
+        g.fifo_h[j] = g.fifo_h[j + 1];
     }
     if (g.fifo_count > 0)
         --g.fifo_count;
@@ -663,8 +697,41 @@ bool submit(const std::uint8_t *access_unit, std::size_t length, bool keyframe)
     const std::uint32_t pitch = output.pitch_bytes ? output.pitch_bytes : output.pitch;
     const std::uint32_t decoded_width = output.width ? output.width : g.frame_width;
     const std::uint32_t decoded_height = output.height ? output.height : g.frame_height;
-    const std::uint32_t width = decoded_width < g.frame_width ? decoded_width : g.frame_width;
-    const std::uint32_t height = decoded_height < g.frame_height ? decoded_height : g.frame_height;
+    // The decoder hands us the CODED size: the visible size rounded up to the macroblock grid
+    // (e.g. 1920x804 arrives as 1920x816). Crop that padding back to the negotiated visible
+    // size. But if the picture differs by MORE than one macroblock, the host changed resolution
+    // mid-stream and ihslib did not re-issue the video config, so the negotiated size is stale:
+    // re-learn it from the decoder instead of cropping the new picture to the old size. That
+    // stale-size crop was the "cropped in" bug - it showed the top-left corner blown up, and
+    // because the old code wrote the clamped value back as the new bound it ratcheted down and
+    // never recovered.
+    if (decoded_width > g.vis_w + 15u || decoded_height > g.vis_h + 15u ||
+        decoded_width + 15u < g.vis_w || decoded_height + 15u < g.vis_h)
+    {
+        slp::log("video: stream size changed to %ux%u (was %ux%u), rescaling", decoded_width,
+                 decoded_height, g.vis_w, g.vis_h);
+        g.vis_w = decoded_width;
+        g.vis_h = decoded_height;
+    }
+    std::uint32_t width = decoded_width < g.vis_w ? decoded_width : g.vis_w;
+    std::uint32_t height = decoded_height < g.vis_h ? decoded_height : g.vis_h;
+    if (width > g.rgba_max_w || height > g.rgba_max_h)
+    {
+        // A real overflow: the stream exceeded the decoder's max, so the session must be
+        // re-negotiated to show it whole. Worth shouting about (once per new size).
+        static std::uint32_t warned_w = 0, warned_h = 0;
+        if (width != warned_w || height != warned_h)
+        {
+            warned_w = width;
+            warned_h = height;
+            slp::log("video: decoded %ux%u exceeds decoder max %ux%u, cropping", width, height,
+                     g.rgba_max_w, g.rgba_max_h);
+        }
+        if (width > g.rgba_max_w)
+            width = g.rgba_max_w;
+        if (height > g.rgba_max_h)
+            height = g.rgba_max_h;
+    }
 
     static int first = 0;
     if (first++ == 0)
@@ -694,6 +761,8 @@ bool submit(const std::uint8_t *access_unit, std::size_t length, bool keyframe)
     ++g.serial;
     g.fifo[g.fifo_count] = back;
     g.fifo_serial[g.fifo_count] = g.serial;
+    g.fifo_w[g.fifo_count] = w;
+    g.fifo_h[g.fifo_count] = h;
     ++g.fifo_count;
     // Cap latency: never buffer much beyond the target (catch up by dropping the oldest).
     while (g.fifo_count > static_cast<int>(g.jitter_target) + 2)
@@ -719,6 +788,8 @@ bool latest(Frame &out)
         {
             g.presenting = g.fifo[0];
             g.present_serial = g.fifo_serial[0];
+            g.present_w = g.fifo_w[0];
+            g.present_h = g.fifo_h[0];
             fifo_pop_front_locked();
         }
     }
@@ -735,6 +806,8 @@ bool latest(Frame &out)
         {
             g.presenting = g.fifo[0];
             g.present_serial = g.fifo_serial[0];
+            g.present_w = g.fifo_w[0];
+            g.present_h = g.fifo_h[0];
             fifo_pop_front_locked();
         }
         else if (g.primed && g.fifo_count == 0)
@@ -745,8 +818,11 @@ bool latest(Frame &out)
     if (g.presenting < 0)
         return false; // nothing decoded yet (or still priming the very first frames)
     out.rgba = g.rgba[g.presenting];
-    out.width = g.frame_width;
-    out.height = g.frame_height;
+    // The size of the frame actually on screen, not the newest decode: after a mid-stream
+    // resolution change the queue briefly holds both sizes, and scaling a queued old frame
+    // with the new frame's dimensions would skew/crop it.
+    out.width = g.present_w;
+    out.height = g.present_h;
     out.serial = g.present_serial;
     return true;
 }

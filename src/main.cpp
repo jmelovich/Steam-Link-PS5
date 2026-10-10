@@ -271,7 +271,8 @@ void draw_stream(ps5::demo::Canvas &canvas) noexcept
 {
     using ps5::demo::Color;
     slp::video::Frame frame;
-    if (slp::video::latest(frame))
+    // Guard the dimensions: the aspect maths below divides by frame.width.
+    if (slp::video::latest(frame) && frame.width > 0 && frame.height > 0)
     {
         status.have_picture = true;
         // (diag) presentation cadence: at 60 Hz vsync, how many vblanks show a NEW decoded
@@ -324,13 +325,19 @@ void draw_stream(ps5::demo::Canvas &canvas) noexcept
         // newer one exists (the tiled blit is the costliest thing we do per refresh).
         static std::uint64_t drawn[2] = {0, 0};
         static const void *drawn_for[2] = {nullptr, nullptr};
+        static unsigned drawn_w[2] = {0, 0}, drawn_h[2] = {0, 0};
         const void *id = canvas.identity();
         int i = drawn_for[0] == id ? 0 : (drawn_for[1] == id ? 1 : (drawn_for[0] == nullptr ? 0 : 1));
-        if (drawn_for[i] != id || drawn[i] == 0)
+        // Also clear when the letterbox rectangle changes: after a mid-stream resolution change
+        // the new picture can be smaller than the last one drawn into this buffer, and without a
+        // clear the old image's edges stay on screen around it.
+        if (drawn_for[i] != id || drawn[i] == 0 || drawn_w[i] != dst_w || drawn_h[i] != dst_h)
         {
             canvas.clear(Color::background);
             drawn_for[i] = id;
             drawn[i] = 0;
+            drawn_w[i] = dst_w;
+            drawn_h[i] = dst_h;
         }
         if (drawn[i] != frame.serial)
         {
